@@ -23,28 +23,28 @@ import (
 // encrypts the pre-master secret to the server's public key.
 type rsaKeyAgreement struct{}
 
-func (ka rsaKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
+func (ka rsaKeyAgreement) GenerateServerKeyExchange(config *Config, cert *Certificate, clientHello *ClientHelloMsg, hello *ServerHelloMsg) (*ServerKeyExchangeMsg, error) {
 	return nil, nil
 }
 
-func (ka rsaKeyAgreement) processClientKeyExchange(config *Config, cert *Certificate, ckx *clientKeyExchangeMsg, version uint16) ([]byte, error) {
+func (ka rsaKeyAgreement) ProcessClientKeyExchange(config *Config, cert *Certificate, ckx *ClientKeyExchangeMsg, version uint16) ([]byte, error) {
 	preMasterSecret := make([]byte, 48)
 	_, err := io.ReadFull(config.rand(), preMasterSecret[2:])
 	if err != nil {
 		return nil, err
 	}
 
-	if len(ckx.ciphertext) < 2 {
+	if len(ckx.Ciphertext) < 2 {
 		return nil, errors.New("bad ClientKeyExchange")
 	}
 
-	ciphertext := ckx.ciphertext
+	ciphertext := ckx.Ciphertext
 	if version != VersionSSL30 {
-		ciphertextLen := int(ckx.ciphertext[0])<<8 | int(ckx.ciphertext[1])
-		if ciphertextLen != len(ckx.ciphertext)-2 {
+		ciphertextLen := int(ckx.Ciphertext[0])<<8 | int(ckx.Ciphertext[1])
+		if ciphertextLen != len(ckx.Ciphertext)-2 {
 			return nil, errors.New("bad ClientKeyExchange")
 		}
-		ciphertext = ckx.ciphertext[2:]
+		ciphertext = ckx.Ciphertext[2:]
 	}
 
 	err = rsa.DecryptPKCS1v15SessionKey(config.rand(), cert.PrivateKey.(*rsa.PrivateKey), ciphertext, preMasterSecret)
@@ -60,11 +60,11 @@ func (ka rsaKeyAgreement) processClientKeyExchange(config *Config, cert *Certifi
 	return preMasterSecret, nil
 }
 
-func (ka rsaKeyAgreement) processServerKeyExchange(config *Config, clientHello *clientHelloMsg, serverHello *serverHelloMsg, cert *x509.Certificate, skx *serverKeyExchangeMsg) error {
+func (ka rsaKeyAgreement) ProcessServerKeyExchange(config *Config, clientHello *ClientHelloMsg, serverHello *ServerHelloMsg, cert *x509.Certificate, skx *ServerKeyExchangeMsg) error {
 	return errors.New("unexpected ServerKeyExchange")
 }
 
-func (ka rsaKeyAgreement) generateClientKeyExchange(config *Config, clientHello *clientHelloMsg, cert *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error) {
+func (ka rsaKeyAgreement) GenerateClientKeyExchange(config *Config, clientHello *ClientHelloMsg, cert *x509.Certificate) ([]byte, *ClientKeyExchangeMsg, error) {
 	preMasterSecret := make([]byte, 48)
 	preMasterSecret[0] = byte(clientHello.vers >> 8)
 	preMasterSecret[1] = byte(clientHello.vers)
@@ -77,11 +77,11 @@ func (ka rsaKeyAgreement) generateClientKeyExchange(config *Config, clientHello 
 	if err != nil {
 		return nil, nil, err
 	}
-	ckx := new(clientKeyExchangeMsg)
-	ckx.ciphertext = make([]byte, len(encrypted)+2)
-	ckx.ciphertext[0] = byte(len(encrypted) >> 8)
-	ckx.ciphertext[1] = byte(len(encrypted))
-	copy(ckx.ciphertext[2:], encrypted)
+	ckx := new(ClientKeyExchangeMsg)
+	ckx.Ciphertext = make([]byte, len(encrypted)+2)
+	ckx.Ciphertext[0] = byte(len(encrypted) >> 8)
+	ckx.Ciphertext[1] = byte(len(encrypted))
+	copy(ckx.Ciphertext[2:], encrypted)
 	return preMasterSecret, ckx, nil
 }
 
@@ -172,7 +172,7 @@ type ecdheKeyAgreement struct {
 	x, y       *big.Int
 }
 
-func (ka *ecdheKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
+func (ka *ecdheKeyAgreement) GenerateServerKeyExchange(config *Config, cert *Certificate, clientHello *ClientHelloMsg, hello *ServerHelloMsg) (*ServerKeyExchangeMsg, error) {
 	var curveid uint16
 
 Curve:
@@ -249,7 +249,7 @@ Curve:
 		return nil, errors.New("unknown ECDHE signature algorithm")
 	}
 
-	skx := new(serverKeyExchangeMsg)
+	skx := new(ServerKeyExchangeMsg)
 	sigAndHashLen := 0
 	if ka.version >= VersionTLS12 {
 		sigAndHashLen = 2
@@ -269,11 +269,11 @@ Curve:
 	return skx, nil
 }
 
-func (ka *ecdheKeyAgreement) processClientKeyExchange(config *Config, cert *Certificate, ckx *clientKeyExchangeMsg, version uint16) ([]byte, error) {
-	if len(ckx.ciphertext) == 0 || int(ckx.ciphertext[0]) != len(ckx.ciphertext)-1 {
+func (ka *ecdheKeyAgreement) ProcessClientKeyExchange(config *Config, cert *Certificate, ckx *ClientKeyExchangeMsg, version uint16) ([]byte, error) {
+	if len(ckx.Ciphertext) == 0 || int(ckx.Ciphertext[0]) != len(ckx.Ciphertext)-1 {
 		return nil, errors.New("bad ClientKeyExchange")
 	}
-	x, y := elliptic.Unmarshal(ka.curve, ckx.ciphertext[1:])
+	x, y := elliptic.Unmarshal(ka.curve, ckx.Ciphertext[1:])
 	if x == nil {
 		return nil, errors.New("bad ClientKeyExchange")
 	}
@@ -287,7 +287,7 @@ func (ka *ecdheKeyAgreement) processClientKeyExchange(config *Config, cert *Cert
 
 var errServerKeyExchange = errors.New("invalid ServerKeyExchange")
 
-func (ka *ecdheKeyAgreement) processServerKeyExchange(config *Config, clientHello *clientHelloMsg, serverHello *serverHelloMsg, cert *x509.Certificate, skx *serverKeyExchangeMsg) error {
+func (ka *ecdheKeyAgreement) ProcessServerKeyExchange(config *Config, clientHello *ClientHelloMsg, serverHello *ServerHelloMsg, cert *x509.Certificate, skx *ServerKeyExchangeMsg) error {
 	if len(skx.key) < 4 {
 		return errServerKeyExchange
 	}
@@ -376,7 +376,7 @@ func (ka *ecdheKeyAgreement) processServerKeyExchange(config *Config, clientHell
 	return nil
 }
 
-func (ka *ecdheKeyAgreement) generateClientKeyExchange(config *Config, clientHello *clientHelloMsg, cert *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error) {
+func (ka *ecdheKeyAgreement) GenerateClientKeyExchange(config *Config, clientHello *ClientHelloMsg, cert *x509.Certificate) ([]byte, *ClientKeyExchangeMsg, error) {
 	if ka.curve == nil {
 		return nil, nil, errors.New("missing ServerKeyExchange message")
 	}
@@ -391,10 +391,10 @@ func (ka *ecdheKeyAgreement) generateClientKeyExchange(config *Config, clientHel
 
 	serialized := elliptic.Marshal(ka.curve, mx, my)
 
-	ckx := new(clientKeyExchangeMsg)
-	ckx.ciphertext = make([]byte, 1+len(serialized))
-	ckx.ciphertext[0] = byte(len(serialized))
-	copy(ckx.ciphertext[1:], serialized)
+	ckx := new(ClientKeyExchangeMsg)
+	ckx.Ciphertext = make([]byte, 1+len(serialized))
+	ckx.Ciphertext[0] = byte(len(serialized))
+	copy(ckx.Ciphertext[1:], serialized)
 
 	return preMasterSecret, ckx, nil
 }

@@ -796,9 +796,9 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	var m handshakeMessage
 	switch data[0] {
 	case typeClientHello:
-		m = new(clientHelloMsg)
+		m = new(ClientHelloMsg)
 	case typeServerHello:
-		m = new(serverHelloMsg)
+		m = new(ServerHelloMsg)
 	case typeCertificate:
 		m = new(certificateMsg)
 	case typeCertificateRequest:
@@ -808,11 +808,11 @@ func (c *Conn) readHandshake() (interface{}, error) {
 	case typeCertificateStatus:
 		m = new(certificateStatusMsg)
 	case typeServerKeyExchange:
-		m = new(serverKeyExchangeMsg)
+		m = new(ServerKeyExchangeMsg)
 	case typeServerHelloDone:
 		m = new(serverHelloDoneMsg)
 	case typeClientKeyExchange:
-		m = new(clientKeyExchangeMsg)
+		m = new(ClientKeyExchangeMsg)
 	case typeCertificateVerify:
 		m = &certificateVerifyMsg{
 			hasSignatureAndHash: c.vers >= VersionTLS12,

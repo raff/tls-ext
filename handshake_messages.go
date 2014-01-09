@@ -6,7 +6,7 @@ package tls
 
 import "bytes"
 
-type clientHelloMsg struct {
+type ClientHelloMsg struct {
 	raw                []byte
 	vers               uint16
 	random             []byte
@@ -23,8 +23,8 @@ type clientHelloMsg struct {
 	signatureAndHashes []signatureAndHash
 }
 
-func (m *clientHelloMsg) equal(i interface{}) bool {
-	m1, ok := i.(*clientHelloMsg)
+func (m *ClientHelloMsg) equal(i interface{}) bool {
+	m1, ok := i.(*ClientHelloMsg)
 	if !ok {
 		return false
 	}
@@ -45,7 +45,7 @@ func (m *clientHelloMsg) equal(i interface{}) bool {
 		eqSignatureAndHashes(m.signatureAndHashes, m1.signatureAndHashes)
 }
 
-func (m *clientHelloMsg) marshal() []byte {
+func (m *ClientHelloMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -230,7 +230,7 @@ func (m *clientHelloMsg) marshal() []byte {
 	return x
 }
 
-func (m *clientHelloMsg) unmarshal(data []byte) bool {
+func (m *ClientHelloMsg) unmarshal(data []byte) bool {
 	if len(data) < 42 {
 		return false
 	}
@@ -386,7 +386,7 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 	return true
 }
 
-type serverHelloMsg struct {
+type ServerHelloMsg struct {
 	raw               []byte
 	vers              uint16
 	random            []byte
@@ -399,8 +399,8 @@ type serverHelloMsg struct {
 	ticketSupported   bool
 }
 
-func (m *serverHelloMsg) equal(i interface{}) bool {
-	m1, ok := i.(*serverHelloMsg)
+func (m *ServerHelloMsg) equal(i interface{}) bool {
+	m1, ok := i.(*ServerHelloMsg)
 	if !ok {
 		return false
 	}
@@ -417,7 +417,7 @@ func (m *serverHelloMsg) equal(i interface{}) bool {
 		m.ticketSupported == m1.ticketSupported
 }
 
-func (m *serverHelloMsg) marshal() []byte {
+func (m *ServerHelloMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -500,7 +500,7 @@ func (m *serverHelloMsg) marshal() []byte {
 	return x
 }
 
-func (m *serverHelloMsg) unmarshal(data []byte) bool {
+func (m *ServerHelloMsg) unmarshal(data []byte) bool {
 	if len(data) < 42 {
 		return false
 	}
@@ -667,13 +667,13 @@ func (m *certificateMsg) unmarshal(data []byte) bool {
 	return true
 }
 
-type serverKeyExchangeMsg struct {
+type ServerKeyExchangeMsg struct {
 	raw []byte
 	key []byte
 }
 
-func (m *serverKeyExchangeMsg) equal(i interface{}) bool {
-	m1, ok := i.(*serverKeyExchangeMsg)
+func (m *ServerKeyExchangeMsg) equal(i interface{}) bool {
+	m1, ok := i.(*ServerKeyExchangeMsg)
 	if !ok {
 		return false
 	}
@@ -682,7 +682,7 @@ func (m *serverKeyExchangeMsg) equal(i interface{}) bool {
 		bytes.Equal(m.key, m1.key)
 }
 
-func (m *serverKeyExchangeMsg) marshal() []byte {
+func (m *ServerKeyExchangeMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -698,7 +698,7 @@ func (m *serverKeyExchangeMsg) marshal() []byte {
 	return x
 }
 
-func (m *serverKeyExchangeMsg) unmarshal(data []byte) bool {
+func (m *ServerKeyExchangeMsg) unmarshal(data []byte) bool {
 	m.raw = data
 	if len(data) < 4 {
 		return false
@@ -790,38 +790,38 @@ func (m *serverHelloDoneMsg) unmarshal(data []byte) bool {
 	return len(data) == 4
 }
 
-type clientKeyExchangeMsg struct {
+type ClientKeyExchangeMsg struct {
 	raw        []byte
-	ciphertext []byte
+	Ciphertext []byte
 }
 
-func (m *clientKeyExchangeMsg) equal(i interface{}) bool {
-	m1, ok := i.(*clientKeyExchangeMsg)
+func (m *ClientKeyExchangeMsg) equal(i interface{}) bool {
+	m1, ok := i.(*ClientKeyExchangeMsg)
 	if !ok {
 		return false
 	}
 
 	return bytes.Equal(m.raw, m1.raw) &&
-		bytes.Equal(m.ciphertext, m1.ciphertext)
+		bytes.Equal(m.Ciphertext, m1.Ciphertext)
 }
 
-func (m *clientKeyExchangeMsg) marshal() []byte {
+func (m *ClientKeyExchangeMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
-	length := len(m.ciphertext)
+	length := len(m.Ciphertext)
 	x := make([]byte, length+4)
 	x[0] = typeClientKeyExchange
 	x[1] = uint8(length >> 16)
 	x[2] = uint8(length >> 8)
 	x[3] = uint8(length)
-	copy(x[4:], m.ciphertext)
+	copy(x[4:], m.Ciphertext)
 
 	m.raw = x
 	return x
 }
 
-func (m *clientKeyExchangeMsg) unmarshal(data []byte) bool {
+func (m *ClientKeyExchangeMsg) unmarshal(data []byte) bool {
 	m.raw = data
 	if len(data) < 4 {
 		return false
@@ -830,7 +830,7 @@ func (m *clientKeyExchangeMsg) unmarshal(data []byte) bool {
 	if l != len(data)-4 {
 		return false
 	}
-	m.ciphertext = data[4:]
+	m.Ciphertext = data[4:]
 	return true
 }
 

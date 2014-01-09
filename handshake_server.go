@@ -19,8 +19,8 @@ import (
 // It's discarded once the handshake has completed.
 type serverHandshakeState struct {
 	c               *Conn
-	clientHello     *clientHelloMsg
-	hello           *serverHelloMsg
+	clientHello     *ClientHelloMsg
+	hello           *ServerHelloMsg
 	suite           *CipherSuite
 	ellipticOk      bool
 	ecdsaOk         bool
@@ -98,7 +98,7 @@ func (hs *serverHandshakeState) readClientHello() (isResume bool, err error) {
 		return false, err
 	}
 	var ok bool
-	hs.clientHello, ok = msg.(*clientHelloMsg)
+	hs.clientHello, ok = msg.(*ClientHelloMsg)
 	if !ok {
 		return false, c.sendAlert(alertUnexpectedMessage)
 	}
@@ -111,7 +111,7 @@ func (hs *serverHandshakeState) readClientHello() (isResume bool, err error) {
 	hs.finishedHash = newFinishedHash(c.vers)
 	hs.finishedHash.Write(hs.clientHello.marshal())
 
-	hs.hello = new(serverHelloMsg)
+	hs.hello = new(ServerHelloMsg)
 
 	supportedCurve := false
 Curves:
@@ -254,7 +254,7 @@ func (hs *serverHandshakeState) checkForResumption() bool {
 func (hs *serverHandshakeState) doResumeHandshake() error {
 	c := hs.c
 
-	hs.hello.cipherSuite = hs.suite.id
+	hs.hello.cipherSuite = hs.suite.Id
 	// We echo the client's session ID in the ServerHello to let it know
 	// that we're doing a resumption.
 	hs.hello.sessionId = hs.clientHello.sessionId
@@ -281,13 +281,13 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 
 	hs.hello.ticketSupported = hs.clientHello.ticketSupported && !config.SessionTicketsDisabled
-	hs.hello.cipherSuite = hs.suite.id
+	hs.hello.cipherSuite = hs.suite.Id
 	hs.finishedHash.Write(hs.hello.marshal())
 	c.writeRecord(recordTypeHandshake, hs.hello.marshal())
 
 	var certMsg *certificateMsg
 
-	if hs.suite.flags&suiteNoCerts == 0 { // this suite requires certificate handshake
+	if hs.suite.Flags&SuiteNoCerts == 0 { // this suite requires certificate handshake
 		certMsg = new(certificateMsg)
 		certMsg.certificates = hs.cert.Certificate
 		hs.finishedHash.Write(certMsg.marshal())
@@ -302,8 +302,8 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		}
 	}
 
-	keyAgreement := hs.suite.ka(c.vers)
-	skx, err := keyAgreement.generateServerKeyExchange(config, hs.cert, hs.clientHello, hs.hello)
+	keyAgreement := hs.suite.Ka(c.vers)
+	skx, err := keyAgreement.GenerateServerKeyExchange(config, hs.cert, hs.clientHello, hs.hello)
 	if err != nil {
 		c.sendAlert(alertHandshakeFailure)
 		return err
@@ -378,7 +378,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 
 	// Get client key exchange
-	ckx, ok := msg.(*clientKeyExchangeMsg)
+	ckx, ok := msg.(*ClientKeyExchangeMsg)
 	if !ok {
 		return c.sendAlert(alertUnexpectedMessage)
 	}
@@ -386,7 +386,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 
 	// If we received a client cert in response to our certificate request message,
 	// the client will send us a certificateVerifyMsg immediately after the
-	// clientKeyExchangeMsg.  This message is a digest of all preceding
+	// ClientKeyExchangeMsg.  This message is a digest of all preceding
 	// handshake-layer messages that is signed using the private key corresponding
 	// to the client's certificate. This allows us to verify that the client is in
 	// possession of the private key of the certificate.
@@ -427,7 +427,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		hs.finishedHash.Write(certVerify.marshal())
 	}
 
-	preMasterSecret, err := keyAgreement.processClientKeyExchange(config, hs.cert, ckx, c.vers)
+	preMasterSecret, err := keyAgreement.ProcessClientKeyExchange(config, hs.cert, ckx, c.vers)
 	if err != nil {
 		c.sendAlert(alertHandshakeFailure)
 		return err
@@ -441,19 +441,19 @@ func (hs *serverHandshakeState) establishKeys() error {
 	c := hs.c
 
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
-		keysFromMasterSecret(c.vers, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.macLen, hs.suite.keyLen, hs.suite.ivLen)
+		keysFromMasterSecret(c.vers, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.MacLen, hs.suite.KeyLen, hs.suite.IvLen)
 
 	var clientCipher, serverCipher interface{}
 	var clientHash, serverHash macFunction
 
-	if hs.suite.aead == nil {
-		clientCipher = hs.suite.cipher(clientKey, clientIV, true /* for reading */)
-		clientHash = hs.suite.mac(c.vers, clientMAC)
-		serverCipher = hs.suite.cipher(serverKey, serverIV, false /* not for reading */)
-		serverHash = hs.suite.mac(c.vers, serverMAC)
+	if hs.suite.Aead == nil {
+		clientCipher = hs.suite.Cipher(clientKey, clientIV, true /* for reading */)
+		clientHash = hs.suite.Mac(c.vers, clientMAC)
+		serverCipher = hs.suite.Cipher(serverKey, serverIV, false /* not for reading */)
+		serverHash = hs.suite.Mac(c.vers, serverMAC)
 	} else {
-		clientCipher = hs.suite.aead(clientKey, clientIV)
-		serverCipher = hs.suite.aead(serverKey, serverIV)
+		clientCipher = hs.suite.Aead(clientKey, clientIV)
+		serverCipher = hs.suite.Aead(serverKey, serverIV)
 	}
 
 	c.in.prepareCipherSpec(c.vers, clientCipher, clientHash)
@@ -513,7 +513,7 @@ func (hs *serverHandshakeState) sendSessionTicket() error {
 	var err error
 	state := sessionState{
 		vers:         c.vers,
-		cipherSuite:  hs.suite.id,
+		cipherSuite:  hs.suite.Id,
 		masterSecret: hs.masterSecret,
 		certificates: hs.certsFromClient,
 	}
@@ -538,7 +538,7 @@ func (hs *serverHandshakeState) sendFinished() error {
 	hs.finishedHash.Write(finished.marshal())
 	c.writeRecord(recordTypeHandshake, finished.marshal())
 
-	c.cipherSuite = hs.suite.id
+	c.cipherSuite = hs.suite.Id
 
 	return nil
 }
@@ -615,7 +615,7 @@ func (c *Conn) tryCipherSuite(id uint16, supportedCipherSuites []uint16, version
 			var candidate *CipherSuite
 
 			for _, s := range cipherSuites {
-				if s.id == id {
+				if s.Id == id {
 					candidate = s
 					break
 				}
@@ -625,13 +625,13 @@ func (c *Conn) tryCipherSuite(id uint16, supportedCipherSuites []uint16, version
 			}
 			// Don't select a ciphersuite which we can't
 			// support for this client.
-			if (candidate.flags&suiteECDHE != 0) && !ellipticOk {
+			if (candidate.Flags&SuiteECDHE != 0) && !ellipticOk {
 				continue
 			}
-			if (candidate.flags&suiteECDSA != 0) != ecdsaOk {
+			if (candidate.Flags&SuiteECDSA != 0) != ecdsaOk {
 				continue
 			}
-			if version < VersionTLS12 && candidate.flags&suiteTLS12 != 0 {
+			if version < VersionTLS12 && candidate.Flags&SuiteTLS12 != 0 {
 				continue
 			}
 			return candidate

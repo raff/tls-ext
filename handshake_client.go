@@ -21,7 +21,7 @@ func (c *Conn) clientHandshake() error {
 		c.config = defaultConfig()
 	}
 
-	hello := &clientHelloMsg{
+	hello := &ClientHelloMsg{
 		vers:               c.config.maxVersion(),
 		compressionMethods: []uint8{compressionNone},
 		random:             make([]byte, 32),
@@ -41,17 +41,17 @@ func (c *Conn) clientHandshake() error {
 NextCipherSuite:
 	for _, suiteId := range possibleCipherSuites {
 		for _, suite := range cipherSuites {
-			if suite.id != suiteId {
+			if suite.Id != suiteId {
 				continue
 			}
 			// Don't advertise TLS 1.2-only cipher suites unless
 			// we're attempting TLS 1.2.
-			if hello.vers < VersionTLS12 && suite.flags&suiteTLS12 != 0 {
+			if hello.vers < VersionTLS12 && suite.Flags&SuiteTLS12 != 0 {
 				continue
 			}
 
-			// useCerts should be true only if no ciphers have suiteNoCerts set
-			useCerts = useCerts && (suite.flags&suiteNoCerts) == 0
+			// useCerts should be true only if no ciphers have SuiteNoCerts set
+			useCerts = useCerts && (suite.Flags&SuiteNoCerts) == 0
 
 			hello.cipherSuites = append(hello.cipherSuites, suiteId)
 			continue NextCipherSuite
@@ -79,7 +79,7 @@ NextCipherSuite:
 	if err != nil {
 		return err
 	}
-	serverHello, ok := msg.(*serverHelloMsg)
+	serverHello, ok := msg.(*ServerHelloMsg)
 	if !ok {
 		return c.sendAlert(alertUnexpectedMessage)
 	}
@@ -191,12 +191,12 @@ NextCipherSuite:
 		}
 	}
 
-	keyAgreement := suite.ka(c.vers)
+	keyAgreement := suite.Ka(c.vers)
 
-	skx, ok := msg.(*serverKeyExchangeMsg)
+	skx, ok := msg.(*ServerKeyExchangeMsg)
 	if ok {
 		finishedHash.Write(skx.marshal())
-		err = keyAgreement.processServerKeyExchange(c.config, hello, serverHello, certs[0], skx)
+		err = keyAgreement.ProcessServerKeyExchange(c.config, hello, serverHello, certs[0], skx)
 		if err != nil {
 			c.sendAlert(alertUnexpectedMessage)
 			return err
@@ -307,7 +307,7 @@ NextCipherSuite:
 		cert = certs[0]
 	}
 
-	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hello, cert)
+	preMasterSecret, ckx, err := keyAgreement.GenerateClientKeyExchange(c.config, hello, cert)
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err
@@ -351,15 +351,15 @@ NextCipherSuite:
 
 	masterSecret := masterFromPreMasterSecret(c.vers, preMasterSecret, hello.random, serverHello.random)
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
-		keysFromMasterSecret(c.vers, masterSecret, hello.random, serverHello.random, suite.macLen, suite.keyLen, suite.ivLen)
+		keysFromMasterSecret(c.vers, masterSecret, hello.random, serverHello.random, suite.MacLen, suite.KeyLen, suite.IvLen)
 
 	var clientCipher interface{}
 	var clientHash macFunction
-	if suite.cipher != nil {
-		clientCipher = suite.cipher(clientKey, clientIV, false /* not for reading */)
-		clientHash = suite.mac(c.vers, clientMAC)
+	if suite.Cipher != nil {
+		clientCipher = suite.Cipher(clientKey, clientIV, false /* not for reading */)
+		clientHash = suite.Mac(c.vers, clientMAC)
 	} else {
-		clientCipher = suite.aead(clientKey, clientIV)
+		clientCipher = suite.Aead(clientKey, clientIV)
 	}
 	c.out.prepareCipherSpec(c.vers, clientCipher, clientHash)
 	c.writeRecord(recordTypeChangeCipherSpec, []byte{1})
@@ -382,11 +382,11 @@ NextCipherSuite:
 
 	var serverCipher interface{}
 	var serverHash macFunction
-	if suite.cipher != nil {
-		serverCipher = suite.cipher(serverKey, serverIV, true /* for reading */)
-		serverHash = suite.mac(c.vers, serverMAC)
+	if suite.Cipher != nil {
+		serverCipher = suite.Cipher(serverKey, serverIV, true /* for reading */)
+		serverHash = suite.Mac(c.vers, serverMAC)
 	} else {
-		serverCipher = suite.aead(serverKey, serverIV)
+		serverCipher = suite.Aead(serverKey, serverIV)
 	}
 	c.in.prepareCipherSpec(c.vers, serverCipher, serverHash)
 	c.readRecord(recordTypeChangeCipherSpec)
@@ -410,7 +410,7 @@ NextCipherSuite:
 	}
 
 	c.handshakeComplete = true
-	c.cipherSuite = suite.id
+	c.cipherSuite = suite.Id
 	return nil
 }
 
