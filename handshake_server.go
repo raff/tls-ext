@@ -21,7 +21,7 @@ type serverHandshakeState struct {
 	c               *Conn
 	clientHello     *clientHelloMsg
 	hello           *serverHelloMsg
-	suite           *cipherSuite
+	suite           *CipherSuite
 	ellipticOk      bool
 	ecdsaOk         bool
 	sessionState    *sessionState
@@ -609,10 +609,10 @@ func (hs *serverHandshakeState) processCertsFromClient(certificates [][]byte) (c
 
 // tryCipherSuite returns a cipherSuite with the given id if that cipher suite
 // is acceptable to use.
-func (c *Conn) tryCipherSuite(id uint16, supportedCipherSuites []uint16, version uint16, ellipticOk, ecdsaOk bool) *cipherSuite {
+func (c *Conn) tryCipherSuite(id uint16, supportedCipherSuites []uint16, version uint16, ellipticOk, ecdsaOk bool) *CipherSuite {
 	for _, supported := range supportedCipherSuites {
 		if id == supported {
-			var candidate *cipherSuite
+			var candidate *CipherSuite
 
 			for _, s := range cipherSuites {
 				if s.id == id {

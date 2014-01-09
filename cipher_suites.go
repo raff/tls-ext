@@ -53,9 +53,9 @@ const (
 	suiteNoCerts
 )
 
-// A cipherSuite is a specific combination of key agreement, cipher and MAC
+// A CipherSuite is a specific combination of key agreement, cipher and MAC
 // function. All cipher suites currently assume RSA key agreement.
-type cipherSuite struct {
+type CipherSuite struct {
 	id uint16
 	// the lengths, in bytes, of the key material needed for each component.
 	keyLen int
@@ -69,7 +69,7 @@ type cipherSuite struct {
 	aead   func(key, fixedNonce []byte) cipher.AEAD
 }
 
-var cipherSuites = []*cipherSuite{
+var cipherSuites = []*CipherSuite{
 	// Ciphersuite order is chosen so that ECDHE comes before plain RSA
 	// and RC4 comes before AES (because of the Lucky13 attack).
 	{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, ecdheRSAKA, suiteECDHE | suiteTLS12, nil, nil, aeadAESGCM},
@@ -85,6 +85,11 @@ var cipherSuites = []*cipherSuite{
 	{TLS_RSA_WITH_AES_256_CBC_SHA, 32, 20, 16, rsaKA, 0, cipherAES, macSHA1, nil},
 	{TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, ecdheRSAKA, suiteECDHE, cipher3DES, macSHA1, nil},
 	{TLS_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, rsaKA, 0, cipher3DES, macSHA1, nil},
+}
+
+// RegisterCipherSuites registers additional cipher suites
+func RegisterCipherSuites(c ...*CipherSuite) {
+	cipherSuites = append(cipherSuites, c...)
 }
 
 func cipherRC4(key, iv []byte, isRead bool) interface{} {
@@ -238,9 +243,9 @@ func ecdheRSAKA(version uint16) KeyAgreement {
 	}
 }
 
-// mutualCipherSuite returns a cipherSuite given a list of supported
+// mutualCipherSuite returns a CipherSuite given a list of supported
 // ciphersuites and the id requested by the peer.
-func mutualCipherSuite(have []uint16, want uint16) *cipherSuite {
+func mutualCipherSuite(have []uint16, want uint16) *CipherSuite {
 	for _, id := range have {
 		if id == want {
 			for _, suite := range cipherSuites {

@@ -36,7 +36,7 @@ func (c *Conn) clientHandshake() error {
 	hello.cipherSuites = make([]uint16, 0, len(possibleCipherSuites))
 
 	// if useCerts is true we expect certificate exchange
-        useCerts := true
+	useCerts := true
 
 NextCipherSuite:
 	for _, suiteId := range possibleCipherSuites {
