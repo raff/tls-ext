@@ -245,6 +245,9 @@ type Config struct {
 	// connections using that key are compromised.
 	SessionTicketKey [32]byte
 
+	// Extra is used to hold extra configuration for external cipher-suites
+	Extra interface{}
+
 	// MinVersion contains the minimum SSL/TLS version that is acceptable.
 	// If zero, then SSLv3 is taken as the minimum.
 	MinVersion uint16

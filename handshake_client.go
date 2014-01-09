@@ -35,6 +35,9 @@ func (c *Conn) clientHandshake() error {
 	possibleCipherSuites := c.config.cipherSuites()
 	hello.cipherSuites = make([]uint16, 0, len(possibleCipherSuites))
 
+	// if useCerts is true we expect certificate exchange
+        useCerts := true
+
 NextCipherSuite:
 	for _, suiteId := range possibleCipherSuites {
 		for _, suite := range cipherSuites {
@@ -46,6 +49,10 @@ NextCipherSuite:
 			if hello.vers < VersionTLS12 && suite.flags&suiteTLS12 != 0 {
 				continue
 			}
+
+			// useCerts should be true only if no ciphers have suiteNoCerts set
+			useCerts = useCerts && (suite.flags&suiteNoCerts) == 0
+
 			hello.cipherSuites = append(hello.cipherSuites, suiteId)
 			continue NextCipherSuite
 		}
@@ -103,75 +110,85 @@ NextCipherSuite:
 		return c.sendAlert(alertHandshakeFailure)
 	}
 
+	var certRequested bool
+	var chainToSend *Certificate
+	var certs []*x509.Certificate
+
 	msg, err = c.readHandshake()
 	if err != nil {
 		return err
 	}
+
 	certMsg, ok := msg.(*certificateMsg)
-	if !ok || len(certMsg.certificates) == 0 {
+	if !ok {
+		if useCerts {
+			return c.sendAlert(alertUnexpectedMessage)
+		}
+	} else if len(certMsg.certificates) == 0 {
 		return c.sendAlert(alertUnexpectedMessage)
-	}
-	finishedHash.Write(certMsg.marshal())
+	} else {
+		finishedHash.Write(certMsg.marshal())
 
-	certs := make([]*x509.Certificate, len(certMsg.certificates))
-	for i, asn1Data := range certMsg.certificates {
-		cert, err := x509.ParseCertificate(asn1Data)
-		if err != nil {
-			c.sendAlert(alertBadCertificate)
-			return errors.New("failed to parse certificate from server: " + err.Error())
-		}
-		certs[i] = cert
-	}
-
-	if !c.config.InsecureSkipVerify {
-		opts := x509.VerifyOptions{
-			Roots:         c.config.RootCAs,
-			CurrentTime:   c.config.time(),
-			DNSName:       c.config.ServerName,
-			Intermediates: x509.NewCertPool(),
-		}
-
-		for i, cert := range certs {
-			if i == 0 {
-				continue
+		certs = make([]*x509.Certificate, len(certMsg.certificates))
+		for i, asn1Data := range certMsg.certificates {
+			cert, err := x509.ParseCertificate(asn1Data)
+			if err != nil {
+				c.sendAlert(alertBadCertificate)
+				return errors.New("failed to parse certificate from server: " + err.Error())
 			}
-			opts.Intermediates.AddCert(cert)
+			certs[i] = cert
 		}
-		c.verifiedChains, err = certs[0].Verify(opts)
-		if err != nil {
-			c.sendAlert(alertBadCertificate)
-			return err
+
+		if !c.config.InsecureSkipVerify {
+			opts := x509.VerifyOptions{
+				Roots:         c.config.RootCAs,
+				CurrentTime:   c.config.time(),
+				DNSName:       c.config.ServerName,
+				Intermediates: x509.NewCertPool(),
+			}
+
+			for i, cert := range certs {
+				if i == 0 {
+					continue
+				}
+				opts.Intermediates.AddCert(cert)
+			}
+			c.verifiedChains, err = certs[0].Verify(opts)
+			if err != nil {
+				c.sendAlert(alertBadCertificate)
+				return err
+			}
 		}
-	}
 
-	switch certs[0].PublicKey.(type) {
-	case *rsa.PublicKey, *ecdsa.PublicKey:
-		break
-	default:
-		return c.sendAlert(alertUnsupportedCertificate)
-	}
+		switch certs[0].PublicKey.(type) {
+		case *rsa.PublicKey, *ecdsa.PublicKey:
+			break
+		default:
+			return c.sendAlert(alertUnsupportedCertificate)
+		}
 
-	c.peerCertificates = certs
+		c.peerCertificates = certs
 
-	if serverHello.ocspStapling {
+		if serverHello.ocspStapling {
+			msg, err = c.readHandshake()
+			if err != nil {
+				return err
+			}
+			cs, ok := msg.(*certificateStatusMsg)
+			if !ok {
+				return c.sendAlert(alertUnexpectedMessage)
+			}
+			finishedHash.Write(cs.marshal())
+
+			if cs.statusType == statusTypeOCSP {
+				c.ocspResponse = cs.response
+			}
+		}
+
 		msg, err = c.readHandshake()
 		if err != nil {
 			return err
 		}
-		cs, ok := msg.(*certificateStatusMsg)
-		if !ok {
-			return c.sendAlert(alertUnexpectedMessage)
-		}
-		finishedHash.Write(cs.marshal())
-
-		if cs.statusType == statusTypeOCSP {
-			c.ocspResponse = cs.response
-		}
-	}
-
-	msg, err = c.readHandshake()
-	if err != nil {
-		return err
 	}
 
 	keyAgreement := suite.ka(c.vers)
@@ -191,8 +208,6 @@ NextCipherSuite:
 		}
 	}
 
-	var chainToSend *Certificate
-	var certRequested bool
 	certReq, ok := msg.(*certificateRequestMsg)
 	if ok {
 		certRequested = true
@@ -279,7 +294,7 @@ NextCipherSuite:
 	// Certificate message, even if it's empty because we don't have a
 	// certificate to send.
 	if certRequested {
-		certMsg = new(certificateMsg)
+		certMsg := new(certificateMsg)
 		if chainToSend != nil {
 			certMsg.certificates = chainToSend.Certificate
 		}
@@ -287,7 +302,12 @@ NextCipherSuite:
 		c.writeRecord(recordTypeHandshake, certMsg.marshal())
 	}
 
-	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hello, certs[0])
+	var cert *x509.Certificate
+	if len(certs) > 0 {
+		cert = certs[0]
+	}
+
+	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hello, cert)
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err

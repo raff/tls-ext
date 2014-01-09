@@ -15,9 +15,9 @@ import (
 	"hash"
 )
 
-// a keyAgreement implements the client and server side of a TLS key agreement
+// a KeyAgreement implements the client and server side of a TLS key agreement
 // protocol by generating and processing key exchange messages.
-type keyAgreement interface {
+type KeyAgreement interface {
 	// On the server side, the first two methods are called in order.
 
 	// In the case that the key agreement protocol doesn't use a
@@ -48,6 +48,9 @@ const (
 	// suiteTLS12 indicates that the cipher suite should only be advertised
 	// and accepted when using TLS 1.2.
 	suiteTLS12
+	// suiteNoCerts indicates that the cipher suite doesn't use certificate exchange
+	// (anonymous ciphersuites or pre-shared-secret)
+	suiteNoCerts
 )
 
 // A cipherSuite is a specific combination of key agreement, cipher and MAC
@@ -58,7 +61,7 @@ type cipherSuite struct {
 	keyLen int
 	macLen int
 	ivLen  int
-	ka     func(version uint16) keyAgreement
+	ka     func(version uint16) KeyAgreement
 	// flags is a bitmask of the suite* values, above.
 	flags  int
 	cipher func(key, iv []byte, isRead bool) interface{}
@@ -217,18 +220,18 @@ func (s tls10MAC) MAC(digestBuf, seq, header, data []byte) []byte {
 	return s.h.Sum(digestBuf[:0])
 }
 
-func rsaKA(version uint16) keyAgreement {
+func rsaKA(version uint16) KeyAgreement {
 	return rsaKeyAgreement{}
 }
 
-func ecdheECDSAKA(version uint16) keyAgreement {
+func ecdheECDSAKA(version uint16) KeyAgreement {
 	return &ecdheKeyAgreement{
 		sigType: signatureECDSA,
 		version: version,
 	}
 }
 
-func ecdheRSAKA(version uint16) keyAgreement {
+func ecdheRSAKA(version uint16) KeyAgreement {
 	return &ecdheKeyAgreement{
 		sigType: signatureRSA,
 		version: version,
