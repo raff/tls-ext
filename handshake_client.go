@@ -110,15 +110,12 @@ NextCipherSuite:
 		return c.sendAlert(alertHandshakeFailure)
 	}
 
-	var certRequested bool
-	var chainToSend *Certificate
-	var certs []*x509.Certificate
-
 	msg, err = c.readHandshake()
 	if err != nil {
 		return err
 	}
 
+        var certs []*x509.Certificate
 	certMsg, ok := msg.(*certificateMsg)
 	if !ok {
 		if useCerts {
@@ -208,6 +205,8 @@ NextCipherSuite:
 		}
 	}
 
+	var certRequested bool
+	var chainToSend *Certificate
 	certReq, ok := msg.(*certificateRequestMsg)
 	if ok {
 		certRequested = true
