@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/elliptic"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 func testClientHello(t *testing.T, serverConfig *Config, m handshakeMessage) {
@@ -29,7 +32,7 @@ func testClientHelloFailure(t *testing.T, serverConfig *Config, m handshakeMessa
 	c, s := localPipe(t)
 	go func() {
 		cli := Client(c, testConfig)
-		if ch, ok := m.(*ClientHelloMsg); ok {
+		if ch, ok := m.(*clientHelloMsg); ok {
 			cli.vers = ch.vers
 		}
 		cli.writeRecord(recordTypeHandshake, m.marshal())
@@ -61,38 +64,26 @@ func TestSimpleError(t *testing.T) {
 	testClientHelloFailure(t, testConfig, &serverHelloDoneMsg{}, "unexpected handshake message")
 }
 
-var badProtocolVersions = []uint16{0x0000, 0x0005, 0x0100, 0x0105, 0x0200, 0x0205}
+var badProtocolVersions = []uint16{0x0000, 0x0005, 0x0100, 0x0105, 0x0200, 0x0205, VersionSSL30}
 
 func TestRejectBadProtocolVersion(t *testing.T) {
+	config := testConfig.Clone()
+	config.MinVersion = VersionSSL30
 	for _, v := range badProtocolVersions {
-		testClientHelloFailure(t, testConfig, &ClientHelloMsg{
+		testClientHelloFailure(t, config, &clientHelloMsg{
 			vers:   v,
 			random: make([]byte, 32),
 		}, "unsupported versions")
 	}
-	testClientHelloFailure(t, testConfig, &ClientHelloMsg{
+	testClientHelloFailure(t, config, &clientHelloMsg{
 		vers:              VersionTLS12,
 		supportedVersions: badProtocolVersions,
 		random:            make([]byte, 32),
 	}, "unsupported versions")
 }
 
-func TestSSLv3OptIn(t *testing.T) {
-	config := testConfig.Clone()
-	config.MinVersion = 0
-	testClientHelloFailure(t, config, &ClientHelloMsg{
-		vers:   VersionSSL30,
-		random: make([]byte, 32),
-	}, "unsupported versions")
-	testClientHelloFailure(t, config, &ClientHelloMsg{
-		vers:              VersionTLS12,
-		supportedVersions: []uint16{VersionSSL30},
-		random:            make([]byte, 32),
-	}, "unsupported versions")
-}
-
 func TestNoSuiteOverlap(t *testing.T) {
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{0xff00},
@@ -102,7 +93,7 @@ func TestNoSuiteOverlap(t *testing.T) {
 }
 
 func TestNoCompressionOverlap(t *testing.T) {
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -112,7 +103,7 @@ func TestNoCompressionOverlap(t *testing.T) {
 }
 
 func TestNoRC4ByDefault(t *testing.T) {
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -126,7 +117,7 @@ func TestNoRC4ByDefault(t *testing.T) {
 }
 
 func TestRejectSNIWithTrailingDot(t *testing.T) {
-	testClientHelloFailure(t, testConfig, &ClientHelloMsg{
+	testClientHelloFailure(t, testConfig, &clientHelloMsg{
 		vers:       VersionTLS12,
 		random:     make([]byte, 32),
 		serverName: "foo.com.",
@@ -136,7 +127,7 @@ func TestRejectSNIWithTrailingDot(t *testing.T) {
 func TestDontSelectECDSAWithRSAKey(t *testing.T) {
 	// Test that, even when both sides support an ECDSA cipher suite, it
 	// won't be selected if the server's private key doesn't support it.
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA},
@@ -162,7 +153,7 @@ func TestDontSelectECDSAWithRSAKey(t *testing.T) {
 func TestDontSelectRSAWithECDSAKey(t *testing.T) {
 	// Test that, even when both sides support an RSA cipher suite, it
 	// won't be selected if the server's private key doesn't support it.
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA},
@@ -185,7 +176,7 @@ func TestDontSelectRSAWithECDSAKey(t *testing.T) {
 }
 
 func TestRenegotiationExtension(t *testing.T) {
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:                         VersionTLS12,
 		compressionMethods:           []uint8{compressionNone},
 		random:                       make([]byte, 32),
@@ -193,7 +184,7 @@ func TestRenegotiationExtension(t *testing.T) {
 		cipherSuites:                 []uint16{TLS_RSA_WITH_RC4_128_SHA},
 	}
 
-	bufChan := make(chan []byte)
+	bufChan := make(chan []byte, 1)
 	c, s := localPipe(t)
 
 	go func() {
@@ -222,7 +213,7 @@ func TestRenegotiationExtension(t *testing.T) {
 	// handshake header.
 	serverHelloLen := int(buf[6])<<16 | int(buf[7])<<8 | int(buf[8])
 
-	var serverHello ServerHelloMsg
+	var serverHello serverHelloMsg
 	// unmarshal expects to be given the handshake header, but
 	// serverHelloLen doesn't include it.
 	if !serverHello.unmarshal(buf[5 : 9+serverHelloLen]) {
@@ -237,7 +228,7 @@ func TestRenegotiationExtension(t *testing.T) {
 func TestTLS12OnlyCipherSuites(t *testing.T) {
 	// Test that a Server doesn't select a TLS 1.2-only cipher suite when
 	// the client negotiates TLS 1.1.
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:   VersionTLS11,
 		random: make([]byte, 32),
 		cipherSuites: []uint16{
@@ -275,12 +266,85 @@ func TestTLS12OnlyCipherSuites(t *testing.T) {
 	if err, ok := reply.(error); ok {
 		t.Fatal(err)
 	}
-	serverHello, ok := reply.(*ServerHelloMsg)
+	serverHello, ok := reply.(*serverHelloMsg)
 	if !ok {
 		t.Fatalf("didn't get ServerHello message in reply. Got %v\n", reply)
 	}
 	if s := serverHello.cipherSuite; s != TLS_RSA_WITH_RC4_128_SHA {
 		t.Fatalf("bad cipher suite from server: %x", s)
+	}
+}
+
+func TestTLSPointFormats(t *testing.T) {
+	// Test that a Server returns the ec_point_format extension when ECC is
+	// negotiated, and not returned on RSA handshake.
+	tests := []struct {
+		name                string
+		cipherSuites        []uint16
+		supportedCurves     []CurveID
+		supportedPoints     []uint8
+		wantSupportedPoints bool
+	}{
+		{"ECC", []uint16{TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA}, []CurveID{CurveP256}, []uint8{compressionNone}, true},
+		{"RSA", []uint16{TLS_RSA_WITH_AES_256_GCM_SHA384}, nil, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientHello := &clientHelloMsg{
+				vers:               VersionTLS12,
+				random:             make([]byte, 32),
+				cipherSuites:       tt.cipherSuites,
+				compressionMethods: []uint8{compressionNone},
+				supportedCurves:    tt.supportedCurves,
+				supportedPoints:    tt.supportedPoints,
+			}
+
+			c, s := localPipe(t)
+			replyChan := make(chan interface{})
+			go func() {
+				cli := Client(c, testConfig)
+				cli.vers = clientHello.vers
+				cli.writeRecord(recordTypeHandshake, clientHello.marshal())
+				reply, err := cli.readHandshake()
+				c.Close()
+				if err != nil {
+					replyChan <- err
+				} else {
+					replyChan <- reply
+				}
+			}()
+			config := testConfig.Clone()
+			config.CipherSuites = clientHello.cipherSuites
+			Server(s, config).Handshake()
+			s.Close()
+			reply := <-replyChan
+			if err, ok := reply.(error); ok {
+				t.Fatal(err)
+			}
+			serverHello, ok := reply.(*serverHelloMsg)
+			if !ok {
+				t.Fatalf("didn't get ServerHello message in reply. Got %v\n", reply)
+			}
+			if tt.wantSupportedPoints {
+				if len(serverHello.supportedPoints) < 1 {
+					t.Fatal("missing ec_point_format extension from server")
+				}
+				found := false
+				for _, p := range serverHello.supportedPoints {
+					if p == pointFormatUncompressed {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatal("missing uncompressed format in ec_point_format extension from server")
+				}
+			} else {
+				if len(serverHello.supportedPoints) != 0 {
+					t.Fatalf("unexcpected ec_point_format extension from server: %v", serverHello.supportedPoints)
+				}
+			}
+		})
 	}
 }
 
@@ -293,7 +357,8 @@ func TestAlertForwarding(t *testing.T) {
 
 	err := Server(s, testConfig).Handshake()
 	s.Close()
-	if e, ok := err.(*net.OpError); !ok || e.Err != error(alertUnknownCA) {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Err != error(alertUnknownCA) {
 		t.Errorf("Got error: %s; expected: %s", err, error(alertUnknownCA))
 	}
 }
@@ -513,11 +578,12 @@ func (test *serverTest) connFromCommand() (conn *recordingConn, child *exec.Cmd,
 		return nil, nil, err
 	}
 
-	connChan := make(chan interface{})
+	connChan := make(chan interface{}, 1)
 	go func() {
 		tcpConn, err := l.Accept()
 		if err != nil {
 			connChan <- err
+			return
 		}
 		connChan <- tcpConn
 	}()
@@ -668,29 +734,19 @@ func (test *serverTest) run(t *testing.T, write bool) {
 }
 
 func runServerTestForVersion(t *testing.T, template *serverTest, version, option string) {
-	t.Run(version, func(t *testing.T) {
-		// Make a deep copy of the template before going parallel.
-		test := *template
-		if template.config != nil {
-			test.config = template.config.Clone()
-		}
+	// Make a deep copy of the template before going parallel.
+	test := *template
+	if template.config != nil {
+		test.config = template.config.Clone()
+	}
+	test.name = version + "-" + test.name
+	if len(test.command) == 0 {
+		test.command = defaultClientCommand
+	}
+	test.command = append([]string(nil), test.command...)
+	test.command = append(test.command, option)
 
-		if !*update && !template.wait {
-			t.Parallel()
-		}
-
-		test.name = version + "-" + test.name
-		if len(test.command) == 0 {
-			test.command = defaultClientCommand
-		}
-		test.command = append([]string(nil), test.command...)
-		test.command = append(test.command, option)
-		test.run(t, *update)
-	})
-}
-
-func runServerTestSSLv3(t *testing.T, template *serverTest) {
-	runServerTestForVersion(t, template, "SSLv3", "-ssl3")
+	runTestAndUpdateIfNeeded(t, version, test.run, test.wait)
 }
 
 func runServerTestTLS10(t *testing.T, template *serverTest) {
@@ -714,7 +770,6 @@ func TestHandshakeServerRSARC4(t *testing.T) {
 		name:    "RSA-RC4",
 		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "RC4-SHA"},
 	}
-	runServerTestSSLv3(t, test)
 	runServerTestTLS10(t, test)
 	runServerTestTLS11(t, test)
 	runServerTestTLS12(t, test)
@@ -725,7 +780,6 @@ func TestHandshakeServerRSA3DES(t *testing.T) {
 		name:    "RSA-3DES",
 		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "DES-CBC3-SHA"},
 	}
-	runServerTestSSLv3(t, test)
 	runServerTestTLS10(t, test)
 	runServerTestTLS12(t, test)
 }
@@ -735,7 +789,6 @@ func TestHandshakeServerRSAAES(t *testing.T) {
 		name:    "RSA-AES",
 		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA"},
 	}
-	runServerTestSSLv3(t, test)
 	runServerTestTLS10(t, test)
 	runServerTestTLS12(t, test)
 }
@@ -801,7 +854,7 @@ func TestHandshakeServerX25519(t *testing.T) {
 
 	test := &serverTest{
 		name:    "X25519",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-AES128-GCM-SHA256", "-curves", "X25519"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256", "-curves", "X25519"},
 		config:  config,
 	}
 	runServerTestTLS12(t, test)
@@ -814,7 +867,7 @@ func TestHandshakeServerP256(t *testing.T) {
 
 	test := &serverTest{
 		name:    "P256",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-AES128-GCM-SHA256", "-curves", "P-256"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256", "-curves", "P-256"},
 		config:  config,
 	}
 	runServerTestTLS12(t, test)
@@ -827,7 +880,7 @@ func TestHandshakeServerHelloRetryRequest(t *testing.T) {
 
 	test := &serverTest{
 		name:    "HelloRetryRequest",
-		command: []string{"openssl", "s_client", "-no_ticket", "-curves", "X25519:P-256"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256", "-curves", "X25519:P-256"},
 		config:  config,
 	}
 	runServerTestTLS13(t, test)
@@ -841,7 +894,7 @@ func TestHandshakeServerALPN(t *testing.T) {
 		name: "ALPN",
 		// Note that this needs OpenSSL 1.0.2 because that is the first
 		// version that supports the -alpn flag.
-		command: []string{"openssl", "s_client", "-alpn", "proto2,proto1"},
+		command: []string{"openssl", "s_client", "-alpn", "proto2,proto1", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"},
 		config:  config,
 		validate: func(state ConnectionState) error {
 			// The server's preferences should override the client.
@@ -863,7 +916,7 @@ func TestHandshakeServerALPNNoMatch(t *testing.T) {
 		name: "ALPN-NoMatch",
 		// Note that this needs OpenSSL 1.0.2 because that is the first
 		// version that supports the -alpn flag.
-		command: []string{"openssl", "s_client", "-alpn", "proto2,proto1"},
+		command: []string{"openssl", "s_client", "-alpn", "proto2,proto1", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"},
 		config:  config,
 		validate: func(state ConnectionState) error {
 			// Rather than reject the connection, Go doesn't select
@@ -937,7 +990,7 @@ func TestHandshakeServerSNIGetCertificateError(t *testing.T) {
 		return nil, errors.New(errMsg)
 	}
 
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -958,7 +1011,7 @@ func TestHandshakeServerEmptyCertificates(t *testing.T) {
 	}
 	serverConfig.Certificates = nil
 
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -970,7 +1023,7 @@ func TestHandshakeServerEmptyCertificates(t *testing.T) {
 	// should always return a “no certificates” error.
 	serverConfig.GetCertificate = nil
 
-	clientHello = &ClientHelloMsg{
+	clientHello = &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -1016,12 +1069,12 @@ func TestServerResumption(t *testing.T) {
 
 	testIssue := &serverTest{
 		name:    "IssueTicket",
-		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-sess_out", sessionFilePath},
+		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-sess_out", sessionFilePath},
 		wait:    true,
 	}
 	testResume := &serverTest{
 		name:    "Resume",
-		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-sess_in", sessionFilePath},
+		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-sess_in", sessionFilePath},
 		validate: func(state ConnectionState) error {
 			if !state.DidResume {
 				return errors.New("did not resume")
@@ -1040,9 +1093,10 @@ func TestServerResumption(t *testing.T) {
 	config.CurvePreferences = []CurveID{CurveP256}
 
 	testResumeHRR := &serverTest{
-		name:    "Resume-HelloRetryRequest",
-		command: []string{"openssl", "s_client", "-curves", "X25519:P-256", "-sess_in", sessionFilePath},
-		config:  config,
+		name: "Resume-HelloRetryRequest",
+		command: []string{"openssl", "s_client", "-curves", "X25519:P-256", "-cipher", "AES128-SHA", "-ciphersuites",
+			"TLS_AES_128_GCM_SHA256", "-sess_in", sessionFilePath},
+		config: config,
 		validate: func(state ConnectionState) error {
 			if !state.DidResume {
 				return errors.New("did not resume")
@@ -1062,13 +1116,13 @@ func TestServerResumptionDisabled(t *testing.T) {
 
 	testIssue := &serverTest{
 		name:    "IssueTicketPreDisable",
-		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-sess_out", sessionFilePath},
+		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-sess_out", sessionFilePath},
 		config:  config,
 		wait:    true,
 	}
 	testResume := &serverTest{
 		name:    "ResumeDisabled",
-		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-sess_in", sessionFilePath},
+		command: []string{"openssl", "s_client", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256", "-sess_in", sessionFilePath},
 		config:  config,
 		validate: func(state ConnectionState) error {
 			if state.DidResume {
@@ -1106,7 +1160,7 @@ func TestFallbackSCSV(t *testing.T) {
 func TestHandshakeServerExportKeyingMaterial(t *testing.T) {
 	test := &serverTest{
 		name:    "ExportKeyingMaterial",
-		command: []string{"openssl", "s_client"},
+		command: []string{"openssl", "s_client", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"},
 		config:  testConfig.Clone(),
 		validate: func(state ConnectionState) error {
 			if km, err := state.ExportKeyingMaterial("test", nil, 42); err != nil {
@@ -1125,22 +1179,26 @@ func TestHandshakeServerExportKeyingMaterial(t *testing.T) {
 func TestHandshakeServerRSAPKCS1v15(t *testing.T) {
 	test := &serverTest{
 		name:    "RSA-RSAPKCS1v15",
-		command: []string{"openssl", "s_client", "-no_ticket", "-sigalgs", "rsa_pkcs1_sha256"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-sigalgs", "rsa_pkcs1_sha256"},
 	}
 	runServerTestTLS12(t, test)
 }
 
 func TestHandshakeServerRSAPSS(t *testing.T) {
+	// We send rsa_pss_rsae_sha512 first, as the test key won't fit, and we
+	// verify the server implementation will disregard the client preference in
+	// that case. See Issue 29793.
 	test := &serverTest{
-		name:                          "RSA-RSAPSS",
-		command:                       []string{"openssl", "s_client", "-no_ticket", "-sigalgs", "rsa_pss_rsae_sha256"},
-		expectHandshakeErrorIncluding: "peer doesn't support any common signature algorithms", // See Issue 32425.
+		name:    "RSA-RSAPSS",
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256", "-sigalgs", "rsa_pss_rsae_sha512:rsa_pss_rsae_sha256"},
 	}
 	runServerTestTLS12(t, test)
+	runServerTestTLS13(t, test)
 
 	test = &serverTest{
-		name:    "RSA-RSAPSS",
-		command: []string{"openssl", "s_client", "-no_ticket", "-sigalgs", "rsa_pss_rsae_sha256"},
+		name:                          "RSA-RSAPSS-TooSmall",
+		command:                       []string{"openssl", "s_client", "-no_ticket", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256", "-sigalgs", "rsa_pss_rsae_sha512"},
+		expectHandshakeErrorIncluding: "peer doesn't support any of the certificate's signature algorithms",
 	}
 	runServerTestTLS13(t, test)
 }
@@ -1154,7 +1212,7 @@ func TestHandshakeServerEd25519(t *testing.T) {
 
 	test := &serverTest{
 		name:    "Ed25519",
-		command: []string{"openssl", "s_client", "-no_ticket"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "ECDHE-ECDSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"},
 		config:  config,
 	}
 	runServerTestTLS12(t, test)
@@ -1294,7 +1352,7 @@ func TestClientAuth(t *testing.T) {
 
 	test := &serverTest{
 		name:    "ClientAuthRequestedNotGiven",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA"},
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256"},
 		config:  config,
 	}
 	runServerTestTLS12(t, test)
@@ -1302,24 +1360,17 @@ func TestClientAuth(t *testing.T) {
 
 	test = &serverTest{
 		name: "ClientAuthRequestedAndGiven",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA",
-			"-cert", certPath, "-key", keyPath, "-client_sigalgs", "rsa_pss_rsae_sha256"},
-		config:            config,
-		expectedPeerCerts: []string{}, // See Issue 32425.
-	}
-	runServerTestTLS12(t, test)
-	test = &serverTest{
-		name: "ClientAuthRequestedAndGiven",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA",
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
 			"-cert", certPath, "-key", keyPath, "-client_sigalgs", "rsa_pss_rsae_sha256"},
 		config:            config,
 		expectedPeerCerts: []string{clientCertificatePEM},
 	}
+	runServerTestTLS12(t, test)
 	runServerTestTLS13(t, test)
 
 	test = &serverTest{
 		name: "ClientAuthRequestedAndECDSAGiven",
-		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA",
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
 			"-cert", ecdsaCertPath, "-key", ecdsaKeyPath},
 		config:            config,
 		expectedPeerCerts: []string{clientECDSACertificatePEM},
@@ -1329,7 +1380,7 @@ func TestClientAuth(t *testing.T) {
 
 	test = &serverTest{
 		name: "ClientAuthRequestedAndEd25519Given",
-		command: []string{"openssl", "s_client", "-no_ticket",
+		command: []string{"openssl", "s_client", "-no_ticket", "-cipher", "AES128-SHA", "-ciphersuites", "TLS_AES_128_GCM_SHA256",
 			"-cert", ed25519CertPath, "-key", ed25519KeyPath},
 		config:            config,
 		expectedPeerCerts: []string{clientEd25519CertificatePEM},
@@ -1350,7 +1401,7 @@ func TestClientAuth(t *testing.T) {
 func TestSNIGivenOnFailure(t *testing.T) {
 	const expectedServerName = "test.testing"
 
-	clientHello := &ClientHelloMsg{
+	clientHello := &clientHelloMsg{
 		vers:               VersionTLS10,
 		random:             make([]byte, 32),
 		cipherSuites:       []uint16{TLS_RSA_WITH_RC4_128_SHA},
@@ -1448,12 +1499,8 @@ var getConfigForClientTests = []struct {
 		},
 		"",
 		func(config *Config) error {
-			// The value of SessionTicketKey should have been
-			// duplicated into the per-connection Config.
-			for i := range config.SessionTicketKey {
-				if b := config.SessionTicketKey[i]; b != byte(i) {
-					return fmt.Errorf("SessionTicketKey was not duplicated from original Config: byte %d has value %d", i, b)
-				}
+			if config.SessionTicketKey == [32]byte{} {
+				return fmt.Errorf("expected SessionTicketKey to be set")
 			}
 			return nil
 		},
@@ -1474,10 +1521,8 @@ var getConfigForClientTests = []struct {
 		},
 		"",
 		func(config *Config) error {
-			// The session ticket keys should have been duplicated
-			// into the per-connection Config.
-			if l := len(config.sessionTicketKeys); l != 1 {
-				return fmt.Errorf("got len(sessionTicketKeys) == %d, wanted 1", l)
+			if config.SessionTicketKey == [32]byte{} {
+				return fmt.Errorf("expected SessionTicketKey to be set")
 			}
 			return nil
 		},
@@ -1601,16 +1646,296 @@ T+E0J8wlH24pgwQHzy7Ko2qLwn1b5PW8ecrlvP1g
 		config.MinVersion = VersionTLS13
 		server := Server(serverConn, config)
 		err := server.Handshake()
-		expectError(t, err, "key size too small for PSS signature")
+		expectError(t, err, "key size too small")
 		close(done)
 	}()
 	err = client.Handshake()
 	expectError(t, err, "handshake failure")
 	<-done
+}
 
-	// In TLS 1.2 RSA-PSS is not used, so this should succeed. See Issue 32425.
+func TestMultipleCertificates(t *testing.T) {
+	clientConfig := testConfig.Clone()
+	clientConfig.CipherSuites = []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256}
+	clientConfig.MaxVersion = VersionTLS12
+
 	serverConfig := testConfig.Clone()
-	serverConfig.Certificates = []Certificate{cert}
-	serverConfig.MaxVersion = VersionTLS12
-	testHandshake(t, testConfig, serverConfig)
+	serverConfig.Certificates = []Certificate{{
+		Certificate: [][]byte{testECDSACertificate},
+		PrivateKey:  testECDSAPrivateKey,
+	}, {
+		Certificate: [][]byte{testRSACertificate},
+		PrivateKey:  testRSAPrivateKey,
+	}}
+
+	_, clientState, err := testHandshake(t, clientConfig, serverConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clientState.PeerCertificates[0].PublicKeyAlgorithm; got != x509.RSA {
+		t.Errorf("expected RSA certificate, got %v", got)
+	}
+}
+
+func TestAESCipherReordering(t *testing.T) {
+	currentAESSupport := hasAESGCMHardwareSupport
+	defer func() { hasAESGCMHardwareSupport = currentAESSupport; initDefaultCipherSuites() }()
+
+	tests := []struct {
+		name                     string
+		clientCiphers            []uint16
+		serverHasAESGCM          bool
+		preferServerCipherSuites bool
+		serverCiphers            []uint16
+		expectedCipher           uint16
+	}{
+		{
+			name: "server has hardware AES, client doesn't (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM:          true,
+			preferServerCipherSuites: true,
+			expectedCipher:           TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+		{
+			name: "server strongly prefers AES-GCM, client doesn't (pick AES-GCM)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM:          true,
+			preferServerCipherSuites: true,
+			serverCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			expectedCipher: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES-GCM, server doesn't have hardware AES (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM: false,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+		{
+			name: "client prefers AES-GCM, server has hardware AES (pick AES-GCM)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM: true,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES-GCM and sends GREASE, server has hardware AES (pick AES-GCM)",
+			clientCiphers: []uint16{
+				0x0A0A, // GREASE value
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM: true,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES-GCM and doesn't support ChaCha, server doesn't have hardware AES (pick AES-GCM)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM: false,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES-GCM and AES-CBC over ChaCha, server doesn't have hardware AES (pick AES-GCM)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			},
+			serverHasAESGCM: false,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES-GCM over ChaCha and sends GREASE, server doesn't have hardware AES (pick ChaCha)",
+			clientCiphers: []uint16{
+				0x0A0A, // GREASE value
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_RSA_WITH_AES_128_CBC_SHA,
+			},
+			serverHasAESGCM: false,
+			expectedCipher:  TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		},
+		{
+			name: "client supports multiple AES-GCM, server doesn't have hardware AES and doesn't support ChaCha (pick corrent AES-GCM)",
+			clientCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			},
+			serverHasAESGCM: false,
+			serverCiphers: []uint16{
+				TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			},
+			expectedCipher: TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hasAESGCMHardwareSupport = tc.serverHasAESGCM
+			initDefaultCipherSuites()
+			hs := &serverHandshakeState{
+				c: &Conn{
+					config: &Config{
+						PreferServerCipherSuites: tc.preferServerCipherSuites,
+						CipherSuites:             tc.serverCiphers,
+					},
+					vers: VersionTLS12,
+				},
+				clientHello: &clientHelloMsg{
+					cipherSuites: tc.clientCiphers,
+					vers:         VersionTLS12,
+				},
+				ecdheOk:      true,
+				rsaSignOk:    true,
+				rsaDecryptOk: true,
+			}
+
+			err := hs.pickCipherSuite()
+			if err != nil {
+				t.Errorf("pickCipherSuite failed: %s", err)
+			}
+
+			if tc.expectedCipher != hs.suite.id {
+				t.Errorf("unexpected cipher chosen: want %d, got %d", tc.expectedCipher, hs.suite.id)
+			}
+		})
+	}
+}
+
+func TestAESCipherReordering13(t *testing.T) {
+	currentAESSupport := hasAESGCMHardwareSupport
+	defer func() { hasAESGCMHardwareSupport = currentAESSupport; initDefaultCipherSuites() }()
+
+	tests := []struct {
+		name                     string
+		clientCiphers            []uint16
+		serverHasAESGCM          bool
+		preferServerCipherSuites bool
+		expectedCipher           uint16
+	}{
+		{
+			name: "server has hardware AES, client doesn't (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_CHACHA20_POLY1305_SHA256,
+				TLS_AES_128_GCM_SHA256,
+			},
+			serverHasAESGCM:          true,
+			preferServerCipherSuites: true,
+			expectedCipher:           TLS_CHACHA20_POLY1305_SHA256,
+		},
+		{
+			name: "neither server nor client have hardware AES (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_CHACHA20_POLY1305_SHA256,
+				TLS_AES_128_GCM_SHA256,
+			},
+			serverHasAESGCM:          false,
+			preferServerCipherSuites: true,
+			expectedCipher:           TLS_CHACHA20_POLY1305_SHA256,
+		},
+		{
+			name: "client prefers AES, server doesn't have hardware, prefer server ciphers (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_AES_128_GCM_SHA256,
+				TLS_CHACHA20_POLY1305_SHA256,
+			},
+			serverHasAESGCM:          false,
+			preferServerCipherSuites: true,
+			expectedCipher:           TLS_CHACHA20_POLY1305_SHA256,
+		},
+		{
+			name: "client prefers AES and sends GREASE, server doesn't have hardware, prefer server ciphers (pick ChaCha)",
+			clientCiphers: []uint16{
+				0x0A0A, // GREASE value
+				TLS_AES_128_GCM_SHA256,
+				TLS_CHACHA20_POLY1305_SHA256,
+			},
+			serverHasAESGCM:          false,
+			preferServerCipherSuites: true,
+			expectedCipher:           TLS_CHACHA20_POLY1305_SHA256,
+		},
+		{
+			name: "client prefers AES, server doesn't (pick ChaCha)",
+			clientCiphers: []uint16{
+				TLS_AES_128_GCM_SHA256,
+				TLS_CHACHA20_POLY1305_SHA256,
+			},
+			serverHasAESGCM: false,
+			expectedCipher:  TLS_CHACHA20_POLY1305_SHA256,
+		},
+		{
+			name: "client prefers AES, server has hardware AES (pick AES)",
+			clientCiphers: []uint16{
+				TLS_AES_128_GCM_SHA256,
+				TLS_CHACHA20_POLY1305_SHA256,
+			},
+			serverHasAESGCM: true,
+			expectedCipher:  TLS_AES_128_GCM_SHA256,
+		},
+		{
+			name: "client prefers AES and sends GREASE, server has hardware AES (pick AES)",
+			clientCiphers: []uint16{
+				0x0A0A, // GREASE value
+				TLS_AES_128_GCM_SHA256,
+				TLS_CHACHA20_POLY1305_SHA256,
+			},
+			serverHasAESGCM: true,
+			expectedCipher:  TLS_AES_128_GCM_SHA256,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hasAESGCMHardwareSupport = tc.serverHasAESGCM
+			initDefaultCipherSuites()
+			hs := &serverHandshakeStateTLS13{
+				c: &Conn{
+					config: &Config{
+						PreferServerCipherSuites: tc.preferServerCipherSuites,
+					},
+					vers: VersionTLS13,
+				},
+				clientHello: &clientHelloMsg{
+					cipherSuites:       tc.clientCiphers,
+					supportedVersions:  []uint16{VersionTLS13},
+					compressionMethods: []uint8{compressionNone},
+					keyShares:          []keyShare{{group: X25519, data: curve25519.Basepoint}},
+				},
+			}
+
+			err := hs.processClientHello()
+			if err != nil {
+				t.Errorf("pickCipherSuite failed: %s", err)
+			}
+
+			if tc.expectedCipher != hs.suite.id {
+				t.Errorf("unexpected cipher chosen: want %d, got %d", tc.expectedCipher, hs.suite.id)
+			}
+		})
+	}
 }
