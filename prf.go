@@ -84,12 +84,12 @@ var keyExpansionLabel = []byte("key expansion")
 var clientFinishedLabel = []byte("client finished")
 var serverFinishedLabel = []byte("server finished")
 
-func prfAndHashForVersion(version uint16, suite *cipherSuite) (func(result, secret, label, seed []byte), crypto.Hash) {
+func prfAndHashForVersion(version uint16, suite *CipherSuiteImpl) (func(result, secret, label, seed []byte), crypto.Hash) {
 	switch version {
 	case VersionTLS10, VersionTLS11:
 		return prf10, crypto.Hash(0)
 	case VersionTLS12:
-		if suite.flags&suiteSHA384 != 0 {
+		if suite.Flags&SuiteSHA384 != 0 {
 			return prf12(sha512.New384), crypto.SHA384
 		}
 		return prf12(sha256.New), crypto.SHA256
@@ -98,14 +98,14 @@ func prfAndHashForVersion(version uint16, suite *cipherSuite) (func(result, secr
 	}
 }
 
-func prfForVersion(version uint16, suite *cipherSuite) func(result, secret, label, seed []byte) {
+func prfForVersion(version uint16, suite *CipherSuiteImpl) func(result, secret, label, seed []byte) {
 	prf, _ := prfAndHashForVersion(version, suite)
 	return prf
 }
 
 // masterFromPreMasterSecret generates the master secret from the pre-master
 // secret. See RFC 5246, Section 8.1.
-func masterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecret, clientRandom, serverRandom []byte) []byte {
+func masterFromPreMasterSecret(version uint16, suite *CipherSuiteImpl, preMasterSecret, clientRandom, serverRandom []byte) []byte {
 	seed := make([]byte, 0, len(clientRandom)+len(serverRandom))
 	seed = append(seed, clientRandom...)
 	seed = append(seed, serverRandom...)
@@ -118,7 +118,7 @@ func masterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecr
 // keysFromMasterSecret generates the connection keys from the master
 // secret, given the lengths of the MAC key, cipher key and IV, as defined in
 // RFC 2246, Section 6.3.
-func keysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
+func keysFromMasterSecret(version uint16, suite *CipherSuiteImpl, masterSecret, clientRandom, serverRandom []byte, macLen, keyLen, ivLen int) (clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV []byte) {
 	seed := make([]byte, 0, len(serverRandom)+len(clientRandom))
 	seed = append(seed, serverRandom...)
 	seed = append(seed, clientRandom...)
@@ -140,7 +140,7 @@ func keysFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clie
 	return
 }
 
-func newFinishedHash(version uint16, cipherSuite *cipherSuite) finishedHash {
+func newFinishedHash(version uint16, cipherSuite *CipherSuiteImpl) finishedHash {
 	var buffer []byte
 	if version >= VersionTLS12 {
 		buffer = []byte{}
@@ -251,7 +251,7 @@ func noExportedKeyingMaterial(label string, context []byte, length int) ([]byte,
 }
 
 // ekmFromMasterSecret generates exported keying material as defined in RFC 5705.
-func ekmFromMasterSecret(version uint16, suite *cipherSuite, masterSecret, clientRandom, serverRandom []byte) func(string, []byte, int) ([]byte, error) {
+func ekmFromMasterSecret(version uint16, suite *CipherSuiteImpl, masterSecret, clientRandom, serverRandom []byte) func(string, []byte, int) ([]byte, error) {
 	return func(label string, context []byte, length int) ([]byte, error) {
 		switch label {
 		case "client finished", "server finished", "master secret", "key expansion":

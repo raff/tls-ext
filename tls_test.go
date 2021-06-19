@@ -1398,23 +1398,23 @@ func TestCipherSuites(t *testing.T) {
 	}
 
 	for _, c := range cipherSuites {
-		cc := cipherSuiteByID(c.id)
+		cc := cipherSuiteByID(c.Id)
 		if cc == nil {
-			t.Errorf("%#04x: no CipherSuite entry", c.id)
+			t.Errorf("%#04x: no CipherSuite entry", c.Id)
 			continue
 		}
 
-		if defaultOff := c.flags&suiteDefaultOff != 0; defaultOff != cc.Insecure {
-			t.Errorf("%#04x: Insecure %v, expected %v", c.id, cc.Insecure, defaultOff)
+		if defaultOff := c.Flags&SuiteDefaultOff != 0; defaultOff != cc.Insecure {
+			t.Errorf("%#04x: Insecure %v, expected %v", c.Id, cc.Insecure, defaultOff)
 		}
-		if tls12Only := c.flags&suiteTLS12 != 0; tls12Only && len(cc.SupportedVersions) != 1 {
-			t.Errorf("%#04x: suite is TLS 1.2 only, but SupportedVersions is %v", c.id, cc.SupportedVersions)
+		if tls12Only := c.Flags&SuiteTLS12 != 0; tls12Only && len(cc.SupportedVersions) != 1 {
+			t.Errorf("%#04x: suite is TLS 1.2 only, but SupportedVersions is %v", c.Id, cc.SupportedVersions)
 		} else if !tls12Only && len(cc.SupportedVersions) != 3 {
-			t.Errorf("%#04x: suite TLS 1.0-1.2, but SupportedVersions is %v", c.id, cc.SupportedVersions)
+			t.Errorf("%#04x: suite TLS 1.0-1.2, but SupportedVersions is %v", c.Id, cc.SupportedVersions)
 		}
 
-		if got := CipherSuiteName(c.id); got != cc.Name {
-			t.Errorf("%#04x: unexpected CipherSuiteName: got %q, expected %q", c.id, got, cc.Name)
+		if got := CipherSuiteName(c.Id); got != cc.Name {
+			t.Errorf("%#04x: unexpected CipherSuiteName: got %q, expected %q", c.Id, got, cc.Name)
 		}
 	}
 	for _, c := range cipherSuitesTLS13 {

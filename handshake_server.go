@@ -23,9 +23,9 @@ import (
 // It's discarded once the handshake has completed.
 type serverHandshakeState struct {
 	c            *Conn
-	clientHello  *clientHelloMsg
-	hello        *serverHelloMsg
-	suite        *cipherSuite
+	clientHello  *ClientHelloMsg
+	hello        *ServerHelloMsg
+	suite        *CipherSuiteImpl
 	ecdheOk      bool
 	ecSignOk     bool
 	rsaDecryptOk bool
@@ -124,12 +124,12 @@ func (hs *serverHandshakeState) handshake() error {
 }
 
 // readClientHello reads a ClientHello message and selects the protocol version.
-func (c *Conn) readClientHello() (*clientHelloMsg, error) {
+func (c *Conn) readClientHello() (*ClientHelloMsg, error) {
 	msg, err := c.readHandshake()
 	if err != nil {
 		return nil, err
 	}
-	clientHello, ok := msg.(*clientHelloMsg)
+	clientHello, ok := msg.(*ClientHelloMsg)
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
 		return nil, unexpectedMessageError(clientHello, msg)
@@ -167,7 +167,7 @@ func (c *Conn) readClientHello() (*clientHelloMsg, error) {
 func (hs *serverHandshakeState) processClientHello() error {
 	c := hs.c
 
-	hs.hello = new(serverHelloMsg)
+	hs.hello = new(ServerHelloMsg)
 	hs.hello.vers = c.vers
 
 	foundCompression := false
@@ -323,7 +323,7 @@ func (hs *serverHandshakeState) pickCipherSuite() error {
 		c.sendAlert(alertHandshakeFailure)
 		return errors.New("tls: no cipher suite supported by both client and server")
 	}
-	c.cipherSuite = hs.suite.id
+	c.cipherSuite = hs.suite.Id
 
 	for _, id := range hs.clientHello.cipherSuites {
 		if id == TLS_FALLBACK_SCSV {
@@ -339,12 +339,12 @@ func (hs *serverHandshakeState) pickCipherSuite() error {
 	return nil
 }
 
-func (hs *serverHandshakeState) cipherSuiteOk(c *cipherSuite) bool {
-	if c.flags&suiteECDHE != 0 {
+func (hs *serverHandshakeState) cipherSuiteOk(c *CipherSuiteImpl) bool {
+	if c.Flags&SuiteECDHE != 0 {
 		if !hs.ecdheOk {
 			return false
 		}
-		if c.flags&suiteECSign != 0 {
+		if c.Flags&SuiteECSign != 0 {
 			if !hs.ecSignOk {
 				return false
 			}
@@ -354,7 +354,7 @@ func (hs *serverHandshakeState) cipherSuiteOk(c *cipherSuite) bool {
 	} else if !hs.rsaDecryptOk {
 		return false
 	}
-	if hs.c.vers < VersionTLS12 && c.flags&suiteTLS12 != 0 {
+	if hs.c.vers < VersionTLS12 && c.Flags&SuiteTLS12 != 0 {
 		return false
 	}
 	return true
@@ -422,8 +422,8 @@ func (hs *serverHandshakeState) checkForResumption() bool {
 func (hs *serverHandshakeState) doResumeHandshake() error {
 	c := hs.c
 
-	hs.hello.cipherSuite = hs.suite.id
-	c.cipherSuite = hs.suite.id
+	hs.hello.cipherSuite = hs.suite.Id
+	c.cipherSuite = hs.suite.Id
 	// We echo the client's session ID in the ServerHello to let it know
 	// that we're doing a resumption.
 	hs.hello.sessionId = hs.clientHello.sessionId
@@ -462,7 +462,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 
 	hs.hello.ticketSupported = hs.clientHello.ticketSupported && !c.config.SessionTicketsDisabled
-	hs.hello.cipherSuite = hs.suite.id
+	hs.hello.cipherSuite = hs.suite.Id
 
 	hs.finishedHash = newFinishedHash(hs.c.vers, hs.suite)
 	if c.config.ClientAuth == NoClientCert {
@@ -492,8 +492,8 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		}
 	}
 
-	keyAgreement := hs.suite.ka(c.vers)
-	skx, err := keyAgreement.generateServerKeyExchange(c.config, hs.cert, hs.clientHello, hs.hello)
+	keyAgreement := hs.suite.KA(c.vers)
+	skx, err := keyAgreement.GenerateServerKeyExchange(c.config, hs.cert, hs.clientHello, hs.hello)
 	if err != nil {
 		c.sendAlert(alertHandshakeFailure)
 		return err
@@ -581,14 +581,14 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 
 	// Get client key exchange
-	ckx, ok := msg.(*clientKeyExchangeMsg)
+	ckx, ok := msg.(*ClientKeyExchangeMsg)
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(ckx, msg)
 	}
 	hs.finishedHash.Write(ckx.marshal())
 
-	preMasterSecret, err := keyAgreement.processClientKeyExchange(c.config, hs.cert, ckx, c.vers)
+	preMasterSecret, err := keyAgreement.ProcessClientKeyExchange(c.config, hs.cert, ckx, c.vers)
 	if err != nil {
 		c.sendAlert(alertHandshakeFailure)
 		return err
@@ -653,19 +653,19 @@ func (hs *serverHandshakeState) establishKeys() error {
 	c := hs.c
 
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
-		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.macLen, hs.suite.keyLen, hs.suite.ivLen)
+		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.MacLen, hs.suite.KeyLen, hs.suite.IvLen)
 
 	var clientCipher, serverCipher interface{}
 	var clientHash, serverHash hash.Hash
 
-	if hs.suite.aead == nil {
-		clientCipher = hs.suite.cipher(clientKey, clientIV, true /* for reading */)
-		clientHash = hs.suite.mac(clientMAC)
-		serverCipher = hs.suite.cipher(serverKey, serverIV, false /* not for reading */)
-		serverHash = hs.suite.mac(serverMAC)
+	if hs.suite.Aead == nil {
+		clientCipher = hs.suite.Cipher(clientKey, clientIV, true /* for reading */)
+		clientHash = hs.suite.Mac(clientMAC)
+		serverCipher = hs.suite.Cipher(serverKey, serverIV, false /* not for reading */)
+		serverHash = hs.suite.Mac(serverMAC)
 	} else {
-		clientCipher = hs.suite.aead(clientKey, clientIV)
-		serverCipher = hs.suite.aead(serverKey, serverIV)
+		clientCipher = hs.suite.Aead(clientKey, clientIV)
+		serverCipher = hs.suite.Aead(serverKey, serverIV)
 	}
 
 	c.in.prepareCipherSpec(c.vers, clientCipher, clientHash)
@@ -727,7 +727,7 @@ func (hs *serverHandshakeState) sendSessionTicket() error {
 	}
 	state := sessionState{
 		vers:         c.vers,
-		cipherSuite:  hs.suite.id,
+		cipherSuite:  hs.suite.Id,
 		createdAt:    createdAt,
 		masterSecret: hs.masterSecret,
 		certificates: certsFromClient,
@@ -828,7 +828,7 @@ func (c *Conn) processCertsFromClient(certificate Certificate) error {
 	return nil
 }
 
-func clientHelloInfo(c *Conn, clientHello *clientHelloMsg) *ClientHelloInfo {
+func clientHelloInfo(c *Conn, clientHello *ClientHelloMsg) *ClientHelloInfo {
 	supportedVersions := clientHello.supportedVersions
 	if len(clientHello.supportedVersions) == 0 {
 		supportedVersions = supportedVersionsFromMax(clientHello.vers)

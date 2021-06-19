@@ -108,96 +108,96 @@ func CipherSuiteName(id uint16) string {
 	return fmt.Sprintf("0x%04X", id)
 }
 
-// a keyAgreement implements the client and server side of a TLS key agreement
+// a KeyAgreement implements the client and server side of a TLS key agreement
 // protocol by generating and processing key exchange messages.
-type keyAgreement interface {
+type KeyAgreement interface {
 	// On the server side, the first two methods are called in order.
 
 	// In the case that the key agreement protocol doesn't use a
-	// ServerKeyExchange message, generateServerKeyExchange can return nil,
+	// ServerKeyExchange message, GenerateServerKeyExchange can return nil,
 	// nil.
-	generateServerKeyExchange(*Config, *Certificate, *clientHelloMsg, *serverHelloMsg) (*serverKeyExchangeMsg, error)
-	processClientKeyExchange(*Config, *Certificate, *clientKeyExchangeMsg, uint16) ([]byte, error)
+	GenerateServerKeyExchange(*Config, *Certificate, *ClientHelloMsg, *ServerHelloMsg) (*ServerKeyExchangeMsg, error)
+	ProcessClientKeyExchange(*Config, *Certificate, *ClientKeyExchangeMsg, uint16) ([]byte, error)
 
 	// On the client side, the next two methods are called in order.
 
 	// This method may not be called if the server doesn't send a
 	// ServerKeyExchange message.
-	processServerKeyExchange(*Config, *clientHelloMsg, *serverHelloMsg, *x509.Certificate, *serverKeyExchangeMsg) error
-	generateClientKeyExchange(*Config, *clientHelloMsg, *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error)
+	ProcessServerKeyExchange(*Config, *ClientHelloMsg, *ServerHelloMsg, *x509.Certificate, *ServerKeyExchangeMsg) error
+	GenerateClientKeyExchange(*Config, *ClientHelloMsg, *x509.Certificate) ([]byte, *ClientKeyExchangeMsg, error)
 }
 
 const (
-	// suiteECDHE indicates that the cipher suite involves elliptic curve
+	// SuiteECDHE indicates that the cipher suite involves elliptic curve
 	// Diffie-Hellman. This means that it should only be selected when the
 	// client indicates that it supports ECC with a curve and point format
 	// that we're happy with.
-	suiteECDHE = 1 << iota
-	// suiteECSign indicates that the cipher suite involves an ECDSA or
+	SuiteECDHE = 1 << iota
+	// SuiteECSign indicates that the cipher suite involves an ECDSA or
 	// EdDSA signature and therefore may only be selected when the server's
 	// certificate is ECDSA or EdDSA. If this is not set then the cipher suite
 	// is RSA based.
-	suiteECSign
-	// suiteTLS12 indicates that the cipher suite should only be advertised
+	SuiteECSign
+	// SuiteTLS12 indicates that the cipher suite should only be advertised
 	// and accepted when using TLS 1.2.
-	suiteTLS12
-	// suiteSHA384 indicates that the cipher suite uses SHA384 as the
+	SuiteTLS12
+	// SuiteSHA384 indicates that the cipher suite uses SHA384 as the
 	// handshake hash.
-	suiteSHA384
-	// suiteDefaultOff indicates that this cipher suite is not included by
+	SuiteSHA384
+	// SuiteDefaultOff indicates that this cipher suite is not included by
 	// default.
-	suiteDefaultOff
+	SuiteDefaultOff
 	// SuiteNoCerts indicates that this cipher suite does not use certificate exchange (i.e. PSK)
 	SuiteNoCerts
 )
 
-// A cipherSuite is a specific combination of key agreement, cipher and MAC function.
-type cipherSuite struct {
-	id uint16
+// A CipherSuiteImpl is a specific combination of key agreement, cipher and MAC function.
+type CipherSuiteImpl struct {
+	Id uint16
 	// the lengths, in bytes, of the key material needed for each component.
-	keyLen int
-	macLen int
-	ivLen  int
-	ka     func(version uint16) keyAgreement
-	// flags is a bitmask of the suite* values, above.
-	flags  int
-	cipher func(key, iv []byte, isRead bool) interface{}
-	mac    func(key []byte) hash.Hash
-	aead   func(key, fixedNonce []byte) aead
+	KeyLen int
+	MacLen int
+	IvLen  int
+	KA     func(version uint16) KeyAgreement
+	// Flags is a bitmask of the suite* values, above.
+	Flags  int
+	Cipher func(key, iv []byte, isRead bool) interface{}
+	Mac    func(key []byte) hash.Hash
+	Aead   func(key, fixedNonce []byte) aead
 }
 
-var cipherSuites = []*cipherSuite{
+var cipherSuites = []*CipherSuiteImpl{
 	// Ciphersuite order is chosen so that ECDHE comes before plain RSA and
 	// AEADs are the top preference.
-	{TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305, 32, 0, 12, ecdheRSAKA, suiteECDHE | suiteTLS12, nil, nil, aeadChaCha20Poly1305},
-	{TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305, 32, 0, 12, ecdheECDSAKA, suiteECDHE | suiteECSign | suiteTLS12, nil, nil, aeadChaCha20Poly1305},
-	{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, ecdheRSAKA, suiteECDHE | suiteTLS12, nil, nil, aeadAESGCM},
-	{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, ecdheECDSAKA, suiteECDHE | suiteECSign | suiteTLS12, nil, nil, aeadAESGCM},
-	{TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, ecdheRSAKA, suiteECDHE | suiteTLS12 | suiteSHA384, nil, nil, aeadAESGCM},
-	{TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, ecdheECDSAKA, suiteECDHE | suiteECSign | suiteTLS12 | suiteSHA384, nil, nil, aeadAESGCM},
-	{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, ecdheRSAKA, suiteECDHE | suiteTLS12 | suiteDefaultOff, cipherAES, macSHA256, nil},
-	{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, 16, 20, 16, ecdheRSAKA, suiteECDHE, cipherAES, macSHA1, nil},
-	{TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, ecdheECDSAKA, suiteECDHE | suiteECSign | suiteTLS12 | suiteDefaultOff, cipherAES, macSHA256, nil},
-	{TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, 16, 20, 16, ecdheECDSAKA, suiteECDHE | suiteECSign, cipherAES, macSHA1, nil},
-	{TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA, 32, 20, 16, ecdheRSAKA, suiteECDHE, cipherAES, macSHA1, nil},
-	{TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, 32, 20, 16, ecdheECDSAKA, suiteECDHE | suiteECSign, cipherAES, macSHA1, nil},
-	{TLS_RSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, rsaKA, suiteTLS12, nil, nil, aeadAESGCM},
-	{TLS_RSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, rsaKA, suiteTLS12 | suiteSHA384, nil, nil, aeadAESGCM},
-	{TLS_RSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, rsaKA, suiteTLS12 | suiteDefaultOff, cipherAES, macSHA256, nil},
-	{TLS_RSA_WITH_AES_128_CBC_SHA, 16, 20, 16, rsaKA, 0, cipherAES, macSHA1, nil},
-	{TLS_RSA_WITH_AES_256_CBC_SHA, 32, 20, 16, rsaKA, 0, cipherAES, macSHA1, nil},
-	{TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, ecdheRSAKA, suiteECDHE, cipher3DES, macSHA1, nil},
-	{TLS_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, rsaKA, 0, cipher3DES, macSHA1, nil},
+	{TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305, 32, 0, 12, EcdheRSAKA, SuiteECDHE | SuiteTLS12, nil, nil, AeadChaCha20Poly1305},
+	{TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305, 32, 0, 12, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteTLS12, nil, nil, AeadChaCha20Poly1305},
+	{TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, EcdheRSAKA, SuiteECDHE | SuiteTLS12, nil, nil, AeadAESGCM},
+	{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteTLS12, nil, nil, AeadAESGCM},
+	{TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, EcdheRSAKA, SuiteECDHE | SuiteTLS12 | SuiteSHA384, nil, nil, AeadAESGCM},
+	{TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteTLS12 | SuiteSHA384, nil, nil, AeadAESGCM},
+	{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, EcdheRSAKA, SuiteECDHE | SuiteTLS12 | SuiteDefaultOff, CipherAES, MacSHA256, nil},
+	{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, 16, 20, 16, EcdheRSAKA, SuiteECDHE, CipherAES, MacSHA1, nil},
+	{TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteTLS12 | SuiteDefaultOff, CipherAES, MacSHA256, nil},
+	{TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, 16, 20, 16, EcdheECDSAKA, SuiteECDHE | SuiteECSign, CipherAES, MacSHA1, nil},
+	{TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA, 32, 20, 16, EcdheRSAKA, SuiteECDHE, CipherAES, MacSHA1, nil},
+	{TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, 32, 20, 16, EcdheECDSAKA, SuiteECDHE | SuiteECSign, CipherAES, MacSHA1, nil},
+	{TLS_RSA_WITH_AES_128_GCM_SHA256, 16, 0, 4, RsaKA, SuiteTLS12, nil, nil, AeadAESGCM},
+	{TLS_RSA_WITH_AES_256_GCM_SHA384, 32, 0, 4, RsaKA, SuiteTLS12 | SuiteSHA384, nil, nil, AeadAESGCM},
+	{TLS_RSA_WITH_AES_128_CBC_SHA256, 16, 32, 16, RsaKA, SuiteTLS12 | SuiteDefaultOff, CipherAES, MacSHA256, nil},
+	{TLS_RSA_WITH_AES_128_CBC_SHA, 16, 20, 16, RsaKA, 0, CipherAES, MacSHA1, nil},
+	{TLS_RSA_WITH_AES_256_CBC_SHA, 32, 20, 16, RsaKA, 0, CipherAES, MacSHA1, nil},
+	{TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, EcdheRSAKA, SuiteECDHE, Cipher3DES, MacSHA1, nil},
+	{TLS_RSA_WITH_3DES_EDE_CBC_SHA, 24, 20, 8, RsaKA, 0, Cipher3DES, MacSHA1, nil},
 
 	// RC4-based cipher suites are disabled by default.
-	{TLS_RSA_WITH_RC4_128_SHA, 16, 20, 0, rsaKA, suiteDefaultOff, cipherRC4, macSHA1, nil},
-	{TLS_ECDHE_RSA_WITH_RC4_128_SHA, 16, 20, 0, ecdheRSAKA, suiteECDHE | suiteDefaultOff, cipherRC4, macSHA1, nil},
-	{TLS_ECDHE_ECDSA_WITH_RC4_128_SHA, 16, 20, 0, ecdheECDSAKA, suiteECDHE | suiteECSign | suiteDefaultOff, cipherRC4, macSHA1, nil},
+	{TLS_RSA_WITH_RC4_128_SHA, 16, 20, 0, RsaKA, SuiteDefaultOff, CipherRC4, MacSHA1, nil},
+	{TLS_ECDHE_RSA_WITH_RC4_128_SHA, 16, 20, 0, EcdheRSAKA, SuiteECDHE | SuiteDefaultOff, CipherRC4, MacSHA1, nil},
+	{TLS_ECDHE_ECDSA_WITH_RC4_128_SHA, 16, 20, 0, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteDefaultOff, CipherRC4, MacSHA1, nil},
 }
 
 // selectCipherSuite returns the first cipher suite from ids which is also in
 // supportedIDs and passes the ok filter.
-func selectCipherSuite(ids, supportedIDs []uint16, ok func(*cipherSuite) bool) *cipherSuite {
+func selectCipherSuite(ids, supportedIDs []uint16, ok func(*CipherSuiteImpl) bool) *CipherSuiteImpl {
 	for _, id := range ids {
 		candidate := cipherSuiteByID(id)
 		if candidate == nil || !ok(candidate) {
@@ -224,16 +224,16 @@ type cipherSuiteTLS13 struct {
 
 var cipherSuitesTLS13 = []*cipherSuiteTLS13{
 	{TLS_AES_128_GCM_SHA256, 16, aeadAESGCMTLS13, crypto.SHA256},
-	{TLS_CHACHA20_POLY1305_SHA256, 32, aeadChaCha20Poly1305, crypto.SHA256},
+	{TLS_CHACHA20_POLY1305_SHA256, 32, AeadChaCha20Poly1305, crypto.SHA256},
 	{TLS_AES_256_GCM_SHA384, 32, aeadAESGCMTLS13, crypto.SHA384},
 }
 
-func cipherRC4(key, iv []byte, isRead bool) interface{} {
+func CipherRC4(key, iv []byte, isRead bool) interface{} {
 	cipher, _ := rc4.NewCipher(key)
 	return cipher
 }
 
-func cipher3DES(key, iv []byte, isRead bool) interface{} {
+func Cipher3DES(key, iv []byte, isRead bool) interface{} {
 	block, _ := des.NewTripleDESCipher(key)
 	if isRead {
 		return cipher.NewCBCDecrypter(block, iv)
@@ -241,7 +241,7 @@ func cipher3DES(key, iv []byte, isRead bool) interface{} {
 	return cipher.NewCBCEncrypter(block, iv)
 }
 
-func cipherAES(key, iv []byte, isRead bool) interface{} {
+func CipherAES(key, iv []byte, isRead bool) interface{} {
 	block, _ := aes.NewCipher(key)
 	if isRead {
 		return cipher.NewCBCDecrypter(block, iv)
@@ -249,14 +249,14 @@ func cipherAES(key, iv []byte, isRead bool) interface{} {
 	return cipher.NewCBCEncrypter(block, iv)
 }
 
-// macSHA1 returns a SHA-1 based constant time MAC.
-func macSHA1(key []byte) hash.Hash {
+// MacSHA1 returns a SHA-1 based constant time MAC.
+func MacSHA1(key []byte) hash.Hash {
 	return hmac.New(newConstantTimeHash(sha1.New), key)
 }
 
-// macSHA256 returns a SHA-256 based MAC. This is only supported in TLS 1.2 and
+// MacSHA256 returns a SHA-256 based MAC. This is only supported in TLS 1.2 and
 // is currently only used in disabled-by-default cipher suites.
-func macSHA256(key []byte) hash.Hash {
+func MacSHA256(key []byte) hash.Hash {
 	return hmac.New(sha256.New, key)
 }
 
@@ -331,7 +331,7 @@ func (f *xorNonceAEAD) Open(out, nonce, ciphertext, additionalData []byte) ([]by
 	return result, err
 }
 
-func aeadAESGCM(key, noncePrefix []byte) aead {
+func AeadAESGCM(key, noncePrefix []byte) aead {
 	if len(noncePrefix) != noncePrefixLength {
 		panic("tls: internal error: wrong nonce length")
 	}
@@ -367,7 +367,7 @@ func aeadAESGCMTLS13(key, nonceMask []byte) aead {
 	return ret
 }
 
-func aeadChaCha20Poly1305(key, nonceMask []byte) aead {
+func AeadChaCha20Poly1305(key, nonceMask []byte) aead {
 	if len(nonceMask) != aeadNonceLength {
 		panic("tls: internal error: wrong nonce length")
 	}
@@ -417,18 +417,18 @@ func tls10MAC(h hash.Hash, out, seq, header, data, extra []byte) []byte {
 	return res
 }
 
-func rsaKA(version uint16) keyAgreement {
+func RsaKA(version uint16) KeyAgreement {
 	return rsaKeyAgreement{}
 }
 
-func ecdheECDSAKA(version uint16) keyAgreement {
+func EcdheECDSAKA(version uint16) KeyAgreement {
 	return &ecdheKeyAgreement{
 		isRSA:   false,
 		version: version,
 	}
 }
 
-func ecdheRSAKA(version uint16) keyAgreement {
+func EcdheRSAKA(version uint16) KeyAgreement {
 	return &ecdheKeyAgreement{
 		isRSA:   true,
 		version: version,
@@ -437,7 +437,7 @@ func ecdheRSAKA(version uint16) keyAgreement {
 
 // mutualCipherSuite returns a cipherSuite given a list of supported
 // ciphersuites and the id requested by the peer.
-func mutualCipherSuite(have []uint16, want uint16) *cipherSuite {
+func mutualCipherSuite(have []uint16, want uint16) *CipherSuiteImpl {
 	for _, id := range have {
 		if id == want {
 			return cipherSuiteByID(id)
@@ -446,9 +446,9 @@ func mutualCipherSuite(have []uint16, want uint16) *cipherSuite {
 	return nil
 }
 
-func cipherSuiteByID(id uint16) *cipherSuite {
+func cipherSuiteByID(id uint16) *CipherSuiteImpl {
 	for _, cipherSuite := range cipherSuites {
-		if cipherSuite.id == id {
+		if cipherSuite.Id == id {
 			return cipherSuite
 		}
 	}

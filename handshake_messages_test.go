@@ -15,8 +15,8 @@ import (
 )
 
 var tests = []interface{}{
-	&clientHelloMsg{},
-	&serverHelloMsg{},
+	&ClientHelloMsg{},
+	&ServerHelloMsg{},
 	&finishedMsg{},
 
 	&certificateMsg{},
@@ -25,7 +25,7 @@ var tests = []interface{}{
 		hasSignatureAlgorithm: true,
 	},
 	&certificateStatusMsg{},
-	&clientKeyExchangeMsg{},
+	&ClientKeyExchangeMsg{},
 	&newSessionTicketMsg{},
 	&sessionState{},
 	&sessionStateTLS13{},
@@ -112,8 +112,8 @@ func randomString(n int, rand *rand.Rand) string {
 	return string(b)
 }
 
-func (*clientHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
-	m := &clientHelloMsg{}
+func (*ClientHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
+	m := &ClientHelloMsg{}
 	m.vers = uint16(rand.Intn(65536))
 	m.random = randomBytes(32, rand)
 	m.sessionId = randomBytes(rand.Intn(32), rand)
@@ -194,8 +194,8 @@ func (*clientHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
 	return reflect.ValueOf(m)
 }
 
-func (*serverHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
-	m := &serverHelloMsg{}
+func (*ServerHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
+	m := &ServerHelloMsg{}
 	m.vers = uint16(rand.Intn(65536))
 	m.random = randomBytes(32, rand)
 	m.sessionId = randomBytes(rand.Intn(32), rand)
@@ -286,9 +286,9 @@ func (*certificateStatusMsg) Generate(rand *rand.Rand, size int) reflect.Value {
 	return reflect.ValueOf(m)
 }
 
-func (*clientKeyExchangeMsg) Generate(rand *rand.Rand, size int) reflect.Value {
-	m := &clientKeyExchangeMsg{}
-	m.ciphertext = randomBytes(rand.Intn(1000)+1, rand)
+func (*ClientKeyExchangeMsg) Generate(rand *rand.Rand, size int) reflect.Value {
+	m := &ClientKeyExchangeMsg{}
+	m.Ciphertext = randomBytes(rand.Intn(1000)+1, rand)
 	return reflect.ValueOf(m)
 }
 
@@ -408,14 +408,14 @@ func TestRejectEmptySCTList(t *testing.T) {
 
 	var random [32]byte
 	sct := []byte{0x42, 0x42, 0x42, 0x42}
-	serverHello := serverHelloMsg{
+	serverHello := ServerHelloMsg{
 		vers:   VersionTLS12,
 		random: random[:],
 		scts:   [][]byte{sct},
 	}
 	serverHelloBytes := serverHello.marshal()
 
-	var serverHelloCopy serverHelloMsg
+	var serverHelloCopy ServerHelloMsg
 	if !serverHelloCopy.unmarshal(serverHelloBytes) {
 		t.Fatal("Failed to unmarshal initial message")
 	}
@@ -451,14 +451,14 @@ func TestRejectEmptySCT(t *testing.T) {
 	// not be zero length.
 
 	var random [32]byte
-	serverHello := serverHelloMsg{
+	serverHello := ServerHelloMsg{
 		vers:   VersionTLS12,
 		random: random[:],
 		scts:   [][]byte{nil},
 	}
 	serverHelloBytes := serverHello.marshal()
 
-	var serverHelloCopy serverHelloMsg
+	var serverHelloCopy ServerHelloMsg
 	if serverHelloCopy.unmarshal(serverHelloBytes) {
 		t.Fatal("Unmarshaled ServerHello with zero-length SCT")
 	}

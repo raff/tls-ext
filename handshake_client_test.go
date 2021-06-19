@@ -1401,7 +1401,7 @@ func TestHostnameInSNI(t *testing.T) {
 		c.Close()
 		s.Close()
 
-		var m clientHelloMsg
+		var m ClientHelloMsg
 		if !m.unmarshal(record) {
 			t.Errorf("unmarshaling ClientHello for %q failed", tt.in)
 			continue
@@ -1443,7 +1443,7 @@ func TestServerSelectingUnconfiguredCipherSuite(t *testing.T) {
 
 	// Create a ServerHello that selects a different cipher suite than the
 	// sole one that the client offered.
-	serverHello := &serverHelloMsg{
+	serverHello := &ServerHelloMsg{
 		vers:        VersionTLS12,
 		random:      make([]byte, 32),
 		cipherSuite: TLS_RSA_WITH_AES_256_GCM_SHA384,

@@ -24,15 +24,15 @@ import (
 
 type clientHandshakeState struct {
 	c            *Conn
-	serverHello  *serverHelloMsg
-	hello        *clientHelloMsg
-	suite        *cipherSuite
+	serverHello  *ServerHelloMsg
+	hello        *ClientHelloMsg
+	suite        *CipherSuiteImpl
 	finishedHash finishedHash
 	masterSecret []byte
 	session      *ClientSessionState
 }
 
-func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
+func (c *Conn) makeClientHello() (*ClientHelloMsg, ecdheParameters, error) {
 	config := c.config
 	if len(config.ServerName) == 0 && !config.InsecureSkipVerify {
 		return nil, nil, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
@@ -63,7 +63,7 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 		clientHelloVersion = VersionTLS12
 	}
 
-	hello := &clientHelloMsg{
+	hello := &ClientHelloMsg{
 		vers:                         clientHelloVersion,
 		compressionMethods:           []uint8{compressionNone},
 		random:                       make([]byte, 32),
@@ -90,16 +90,16 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 
 	for _, suiteId := range possibleCipherSuites {
 		for _, suite := range cipherSuites {
-			if suite.id != suiteId {
+			if suite.Id != suiteId {
 				continue
 			}
 			// Don't advertise TLS 1.2-only cipher suites unless
 			// we're attempting TLS 1.2.
-			if hello.vers < VersionTLS12 && suite.flags&suiteTLS12 != 0 {
+			if hello.vers < VersionTLS12 && suite.Flags&SuiteTLS12 != 0 {
 				break
 			}
 			hello.cipherSuites = append(hello.cipherSuites, suiteId)
-			useCerts = useCerts && (suite.flags&SuiteNoCerts) == 0
+			useCerts = useCerts && (suite.Flags&SuiteNoCerts) == 0
 
 			break
 		}
@@ -178,7 +178,7 @@ func (c *Conn) clientHandshake() (err error) {
 		return err
 	}
 
-	serverHello, ok := msg.(*serverHelloMsg)
+	serverHello, ok := msg.(*ServerHelloMsg)
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(serverHello, msg)
@@ -235,7 +235,7 @@ func (c *Conn) clientHandshake() (err error) {
 	return nil
 }
 
-func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
+func (c *Conn) loadSession(hello *ClientHelloMsg) (cacheKey string,
 	session *ClientSessionState, earlySecret, binderKey []byte) {
 	if c.config.SessionTicketsDisabled || c.config.ClientSessionCache == nil {
 		return "", nil, nil, nil
@@ -351,7 +351,7 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 	return
 }
 
-func (c *Conn) pickTLSVersion(serverHello *serverHelloMsg) error {
+func (c *Conn) pickTLSVersion(serverHello *ServerHelloMsg) error {
 	peerVersion := serverHello.vers
 	if serverHello.supportedVersion != 0 {
 		peerVersion = serverHello.supportedVersion
@@ -456,7 +456,7 @@ func (hs *clientHandshakeState) pickCipherSuite() error {
 		return errors.New("tls: server chose an unconfigured cipher suite")
 	}
 
-	hs.c.cipherSuite = hs.suite.id
+	hs.c.cipherSuite = hs.suite.Id
 	return nil
 }
 
@@ -521,12 +521,12 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		}
 	}
 
-	keyAgreement := hs.suite.ka(c.vers)
+	keyAgreement := hs.suite.KA(c.vers)
 
-	skx, ok := msg.(*serverKeyExchangeMsg)
+	skx, ok := msg.(*ServerKeyExchangeMsg)
 	if ok {
 		hs.finishedHash.Write(skx.marshal())
-		err = keyAgreement.processServerKeyExchange(c.config, hs.hello, hs.serverHello, c.peerCertificates[0], skx)
+		err = keyAgreement.ProcessServerKeyExchange(c.config, hs.hello, hs.serverHello, c.peerCertificates[0], skx)
 		if err != nil {
 			c.sendAlert(alertUnexpectedMessage)
 			return err
@@ -576,7 +576,7 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		}
 	}
 
-	preMasterSecret, ckx, err := keyAgreement.generateClientKeyExchange(c.config, hs.hello, c.peerCertificates[0])
+	preMasterSecret, ckx, err := keyAgreement.GenerateClientKeyExchange(c.config, hs.hello, c.peerCertificates[0])
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err
@@ -651,17 +651,17 @@ func (hs *clientHandshakeState) establishKeys() error {
 	c := hs.c
 
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
-		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.hello.random, hs.serverHello.random, hs.suite.macLen, hs.suite.keyLen, hs.suite.ivLen)
+		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.hello.random, hs.serverHello.random, hs.suite.MacLen, hs.suite.KeyLen, hs.suite.IvLen)
 	var clientCipher, serverCipher interface{}
 	var clientHash, serverHash hash.Hash
-	if hs.suite.cipher != nil {
-		clientCipher = hs.suite.cipher(clientKey, clientIV, false /* not for reading */)
-		clientHash = hs.suite.mac(clientMAC)
-		serverCipher = hs.suite.cipher(serverKey, serverIV, true /* for reading */)
-		serverHash = hs.suite.mac(serverMAC)
+	if hs.suite.Cipher != nil {
+		clientCipher = hs.suite.Cipher(clientKey, clientIV, false /* not for reading */)
+		clientHash = hs.suite.Mac(clientMAC)
+		serverCipher = hs.suite.Cipher(serverKey, serverIV, true /* for reading */)
+		serverHash = hs.suite.Mac(serverMAC)
 	} else {
-		clientCipher = hs.suite.aead(clientKey, clientIV)
-		serverCipher = hs.suite.aead(serverKey, serverIV)
+		clientCipher = hs.suite.Aead(clientKey, clientIV)
+		serverCipher = hs.suite.Aead(serverKey, serverIV)
 	}
 
 	c.in.prepareCipherSpec(c.vers, serverCipher, serverHash)
@@ -729,7 +729,7 @@ func (hs *clientHandshakeState) processServerHello() (bool, error) {
 		return false, errors.New("tls: server resumed a session with a different version")
 	}
 
-	if hs.session.cipherSuite != hs.suite.id {
+	if hs.session.cipherSuite != hs.suite.Id {
 		c.sendAlert(alertHandshakeFailure)
 		return false, errors.New("tls: server resumed a session with a different cipher suite")
 	}
@@ -796,7 +796,7 @@ func (hs *clientHandshakeState) readSessionTicket() error {
 	hs.session = &ClientSessionState{
 		sessionTicket:      sessionTicketMsg.ticket,
 		vers:               c.vers,
-		cipherSuite:        hs.suite.id,
+		cipherSuite:        hs.suite.Id,
 		masterSecret:       hs.masterSecret,
 		serverCertificates: c.peerCertificates,
 		verifiedChains:     c.verifiedChains,

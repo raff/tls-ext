@@ -1113,11 +1113,11 @@ func (chi *ClientHelloInfo) SupportsCertificate(c *Certificate) error {
 		}
 		// Finally, there needs to be a mutual cipher suite that uses the static
 		// RSA key exchange instead of ECDHE.
-		rsaCipherSuite := selectCipherSuite(chi.CipherSuites, config.cipherSuites(), func(c *cipherSuite) bool {
-			if c.flags&suiteECDHE != 0 {
+		rsaCipherSuite := selectCipherSuite(chi.CipherSuites, config.cipherSuites(), func(c *CipherSuiteImpl) bool {
+			if c.Flags&SuiteECDHE != 0 {
 				return false
 			}
-			if vers < VersionTLS12 && c.flags&suiteTLS12 != 0 {
+			if vers < VersionTLS12 && c.Flags&SuiteTLS12 != 0 {
 				return false
 			}
 			return true
@@ -1190,11 +1190,11 @@ func (chi *ClientHelloInfo) SupportsCertificate(c *Certificate) error {
 	// Make sure that there is a mutually supported cipher suite that works with
 	// this certificate. Cipher suite selection will then apply the logic in
 	// reverse to pick it. See also serverHandshakeState.cipherSuiteOk.
-	cipherSuite := selectCipherSuite(chi.CipherSuites, config.cipherSuites(), func(c *cipherSuite) bool {
-		if c.flags&suiteECDHE == 0 {
+	cipherSuite := selectCipherSuite(chi.CipherSuites, config.cipherSuites(), func(c *CipherSuiteImpl) bool {
+		if c.Flags&SuiteECDHE == 0 {
 			return false
 		}
-		if c.flags&suiteECSign != 0 {
+		if c.Flags&SuiteECSign != 0 {
 			if !ecdsaCipherSuite {
 				return false
 			}
@@ -1203,7 +1203,7 @@ func (chi *ClientHelloInfo) SupportsCertificate(c *Certificate) error {
 				return false
 			}
 		}
-		if vers < VersionTLS12 && c.flags&suiteTLS12 != 0 {
+		if vers < VersionTLS12 && c.Flags&SuiteTLS12 != 0 {
 			return false
 		}
 		return true
@@ -1488,15 +1488,15 @@ func initDefaultCipherSuites() {
 
 NextCipherSuite:
 	for _, suite := range cipherSuites {
-		if suite.flags&suiteDefaultOff != 0 {
+		if suite.Flags&SuiteDefaultOff != 0 {
 			continue
 		}
 		for _, existing := range varDefaultCipherSuites {
-			if existing == suite.id {
+			if existing == suite.Id {
 				continue NextCipherSuite
 			}
 		}
-		varDefaultCipherSuites = append(varDefaultCipherSuites, suite.id)
+		varDefaultCipherSuites = append(varDefaultCipherSuites, suite.Id)
 	}
 }
 

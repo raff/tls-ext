@@ -66,7 +66,7 @@ func readUint24LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
 	return s.ReadUint24LengthPrefixed((*cryptobyte.String)(out))
 }
 
-type clientHelloMsg struct {
+type ClientHelloMsg struct {
 	raw                              []byte
 	vers                             uint16
 	random                           []byte
@@ -94,7 +94,7 @@ type clientHelloMsg struct {
 	pskBinders                       [][]byte
 }
 
-func (m *clientHelloMsg) marshal() []byte {
+func (m *ClientHelloMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -303,7 +303,7 @@ func (m *clientHelloMsg) marshal() []byte {
 // marshalWithoutBinders returns the ClientHello through the
 // PreSharedKeyExtension.identities field, according to RFC 8446, Section
 // 4.2.11.2. Note that m.pskBinders must be set to slices of the correct length.
-func (m *clientHelloMsg) marshalWithoutBinders() []byte {
+func (m *ClientHelloMsg) marshalWithoutBinders() []byte {
 	bindersLen := 2 // uint16 length prefix
 	for _, binder := range m.pskBinders {
 		bindersLen += 1 // uint8 length prefix
@@ -317,7 +317,7 @@ func (m *clientHelloMsg) marshalWithoutBinders() []byte {
 // updateBinders updates the m.pskBinders field, if necessary updating the
 // cached marshaled representation. The supplied binders must have the same
 // length as the current m.pskBinders.
-func (m *clientHelloMsg) updateBinders(pskBinders [][]byte) {
+func (m *ClientHelloMsg) updateBinders(pskBinders [][]byte) {
 	if len(pskBinders) != len(m.pskBinders) {
 		panic("tls: internal error: pskBinders length mismatch")
 	}
@@ -344,8 +344,8 @@ func (m *clientHelloMsg) updateBinders(pskBinders [][]byte) {
 	}
 }
 
-func (m *clientHelloMsg) unmarshal(data []byte) bool {
-	*m = clientHelloMsg{raw: data}
+func (m *ClientHelloMsg) unmarshal(data []byte) bool {
+	*m = ClientHelloMsg{raw: data}
 	s := cryptobyte.String(data)
 
 	if !s.Skip(4) || // message type and uint24 length field
@@ -589,7 +589,7 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 	return true
 }
 
-type serverHelloMsg struct {
+type ServerHelloMsg struct {
 	raw                          []byte
 	vers                         uint16
 	random                       []byte
@@ -613,7 +613,7 @@ type serverHelloMsg struct {
 	selectedGroup CurveID
 }
 
-func (m *serverHelloMsg) marshal() []byte {
+func (m *ServerHelloMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -729,8 +729,8 @@ func (m *serverHelloMsg) marshal() []byte {
 	return m.raw
 }
 
-func (m *serverHelloMsg) unmarshal(data []byte) bool {
-	*m = serverHelloMsg{raw: data}
+func (m *ServerHelloMsg) unmarshal(data []byte) bool {
+	*m = ServerHelloMsg{raw: data}
 	s := cryptobyte.String(data)
 
 	if !s.Skip(4) || // message type and uint24 length field
@@ -1423,12 +1423,12 @@ func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate) bool {
 	return true
 }
 
-type serverKeyExchangeMsg struct {
+type ServerKeyExchangeMsg struct {
 	raw []byte
 	key []byte
 }
 
-func (m *serverKeyExchangeMsg) marshal() []byte {
+func (m *ServerKeyExchangeMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
@@ -1444,7 +1444,7 @@ func (m *serverKeyExchangeMsg) marshal() []byte {
 	return x
 }
 
-func (m *serverKeyExchangeMsg) unmarshal(data []byte) bool {
+func (m *ServerKeyExchangeMsg) unmarshal(data []byte) bool {
 	m.raw = data
 	if len(data) < 4 {
 		return false
@@ -1502,28 +1502,28 @@ func (m *serverHelloDoneMsg) unmarshal(data []byte) bool {
 	return len(data) == 4
 }
 
-type clientKeyExchangeMsg struct {
+type ClientKeyExchangeMsg struct {
 	raw        []byte
-	ciphertext []byte
+	Ciphertext []byte
 }
 
-func (m *clientKeyExchangeMsg) marshal() []byte {
+func (m *ClientKeyExchangeMsg) marshal() []byte {
 	if m.raw != nil {
 		return m.raw
 	}
-	length := len(m.ciphertext)
+	length := len(m.Ciphertext)
 	x := make([]byte, length+4)
 	x[0] = typeClientKeyExchange
 	x[1] = uint8(length >> 16)
 	x[2] = uint8(length >> 8)
 	x[3] = uint8(length)
-	copy(x[4:], m.ciphertext)
+	copy(x[4:], m.Ciphertext)
 
 	m.raw = x
 	return x
 }
 
-func (m *clientKeyExchangeMsg) unmarshal(data []byte) bool {
+func (m *ClientKeyExchangeMsg) unmarshal(data []byte) bool {
 	m.raw = data
 	if len(data) < 4 {
 		return false
@@ -1532,7 +1532,7 @@ func (m *clientKeyExchangeMsg) unmarshal(data []byte) bool {
 	if l != len(data)-4 {
 		return false
 	}
-	m.ciphertext = data[4:]
+	m.Ciphertext = data[4:]
 	return true
 }
 
