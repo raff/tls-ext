@@ -17,10 +17,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"internal/cpu"
 	"io"
 	"net"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1436,21 +1434,28 @@ func defaultCipherSuitesTLS13() []uint16 {
 }
 
 var (
-	hasGCMAsmAMD64 = cpu.X86.HasAES && cpu.X86.HasPCLMULQDQ
-	hasGCMAsmARM64 = cpu.ARM64.HasAES && cpu.ARM64.HasPMULL
-	// Keep in sync with crypto/aes/cipher_s390x.go.
-	hasGCMAsmS390X = cpu.S390X.HasAES && cpu.S390X.HasAESCBC && cpu.S390X.HasAESCTR && (cpu.S390X.HasGHASH || cpu.S390X.HasAESGCM)
+	/*
+		This is part where we lie. The underlying hardware may very well have hardware support for AES-GCM
+		but given the dependency on "internal/cpu" packages, we cannot know for sure.
+		For our usecase, we assume there's no hardware support
 
-	hasAESGCMHardwareSupport = runtime.GOARCH == "amd64" && hasGCMAsmAMD64 ||
-		runtime.GOARCH == "arm64" && hasGCMAsmARM64 ||
-		runtime.GOARCH == "s390x" && hasGCMAsmS390X
+		hasGCMAsmAMD64 = cpu.X86.HasAES && cpu.X86.HasPCLMULQDQ
+		hasGCMAsmARM64 = cpu.ARM64.HasAES && cpu.ARM64.HasPMULL
+		// Keep in sync with crypto/aes/cipher_s390x.go.
+		hasGCMAsmS390X = cpu.S390X.HasAES && cpu.S390X.HasAESCBC && cpu.S390X.HasAESCTR && (cpu.S390X.HasGHASH || cpu.S390X.HasAESGCM)
+
+		hasAESGCMHardwareSupport = runtime.GOARCH == "amd64" && hasGCMAsmAMD64 ||
+			runtime.GOARCH == "arm64" && hasGCMAsmARM64 ||
+			runtime.GOARCH == "s390x" && hasGCMAsmS390X
+	*/
+	hasAESGCMHardwareSupport = false
 )
 
 func initDefaultCipherSuites() {
 	var topCipherSuites []uint16
 
 	if hasAESGCMHardwareSupport {
-		// If AES-GCM hardware is provided then prioritise AES-GCM
+		// If AES-GCM hardware is provided then prioritize AES-GCM
 		// cipher suites.
 		topCipherSuites = []uint16{
 			TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
