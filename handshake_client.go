@@ -32,27 +32,27 @@ type clientHandshakeState struct {
 	session      *ClientSessionState
 }
 
-func (c *Conn) makeClientHello() (*ClientHelloMsg, ecdheParameters, error) {
+func (c *Conn) makeClientHello() (*ClientHelloMsg, ecdheParameters, bool, error) {
 	config := c.config
 	if len(config.ServerName) == 0 && !config.InsecureSkipVerify {
-		return nil, nil, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
+		return nil, nil, true, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
 	}
 
 	nextProtosLength := 0
 	for _, proto := range config.NextProtos {
 		if l := len(proto); l == 0 || l > 255 {
-			return nil, nil, errors.New("tls: invalid NextProtos value")
+			return nil, nil, true, errors.New("tls: invalid NextProtos value")
 		} else {
 			nextProtosLength += 1 + l
 		}
 	}
 	if nextProtosLength > 0xffff {
-		return nil, nil, errors.New("tls: NextProtos values too large")
+		return nil, nil, true, errors.New("tls: NextProtos values too large")
 	}
 
 	supportedVersions := config.supportedVersions()
 	if len(supportedVersions) == 0 {
-		return nil, nil, errors.New("tls: no supported versions satisfy MinVersion and MaxVersion")
+		return nil, nil, true, errors.New("tls: no supported versions satisfy MinVersion and MaxVersion")
 	}
 
 	clientHelloVersion := config.maxSupportedVersion()
@@ -107,14 +107,14 @@ func (c *Conn) makeClientHello() (*ClientHelloMsg, ecdheParameters, error) {
 
 	_, err := io.ReadFull(config.rand(), hello.random)
 	if err != nil {
-		return nil, nil, errors.New("tls: short read from Rand: " + err.Error())
+		return nil, nil, true, errors.New("tls: short read from Rand: " + err.Error())
 	}
 
 	// A random session ID is used to detect when the server accepted a ticket
 	// and is resuming a session (see RFC 5077). In TLS 1.3, it's always set as
 	// a compatibility measure (see RFC 8446, Section 4.1.2).
 	if _, err := io.ReadFull(config.rand(), hello.sessionId); err != nil {
-		return nil, nil, errors.New("tls: short read from Rand: " + err.Error())
+		return nil, nil, true, errors.New("tls: short read from Rand: " + err.Error())
 	}
 
 	if hello.vers >= VersionTLS12 {
@@ -127,16 +127,16 @@ func (c *Conn) makeClientHello() (*ClientHelloMsg, ecdheParameters, error) {
 
 		curveID := config.curvePreferences()[0]
 		if _, ok := curveForCurveID(curveID); curveID != X25519 && !ok {
-			return nil, nil, errors.New("tls: CurvePreferences includes unsupported curve")
+			return nil, nil, true, errors.New("tls: CurvePreferences includes unsupported curve")
 		}
 		params, err = generateECDHEParameters(config.rand(), curveID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, true, err
 		}
 		hello.keyShares = []keyShare{{group: curveID, data: params.PublicKey()}}
 	}
 
-	return hello, params, nil
+	return hello, params, useCerts, nil
 }
 
 func (c *Conn) clientHandshake() (err error) {
@@ -148,7 +148,7 @@ func (c *Conn) clientHandshake() (err error) {
 	// need to be reset.
 	c.didResume = false
 
-	hello, ecdheParams, err := c.makeClientHello()
+	hello, ecdheParams, useCert, err := c.makeClientHello()
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (c *Conn) clientHandshake() (err error) {
 		session:     session,
 	}
 
-	if err := hs.handshake(); err != nil {
+	if err := hs.handshake(useCert); err != nil {
 		return err
 	}
 
@@ -373,7 +373,7 @@ func (c *Conn) pickTLSVersion(serverHello *ServerHelloMsg) error {
 
 // Does the handshake, either a full one or resumes old session. Requires hs.c,
 // hs.hello, hs.serverHello, and, optionally, hs.session to be set.
-func (hs *clientHandshakeState) handshake() error {
+func (hs *clientHandshakeState) handshake(useCerts bool) error {
 	c := hs.c
 
 	isResume, err := hs.processServerHello()
@@ -423,7 +423,7 @@ func (hs *clientHandshakeState) handshake() error {
 			return err
 		}
 	} else {
-		if err := hs.doFullHandshake(); err != nil {
+		if err := hs.doFullHandshake(useCerts); err != nil {
 			return err
 		}
 		if err := hs.establishKeys(); err != nil {
@@ -460,7 +460,7 @@ func (hs *clientHandshakeState) pickCipherSuite() error {
 	return nil
 }
 
-func (hs *clientHandshakeState) doFullHandshake() error {
+func (hs *clientHandshakeState) doFullHandshake(useCerts bool) error {
 	c := hs.c
 
 	msg, err := c.readHandshake()
@@ -468,56 +468,62 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		return err
 	}
 	certMsg, ok := msg.(*certificateMsg)
-	if !ok || len(certMsg.certificates) == 0 {
+	if !ok {
+		if useCerts {
+			c.sendAlert(alertUnexpectedMessage)
+			return unexpectedMessageError(certMsg, msg)
+		}
+	} else if len(certMsg.certificates) == 0 {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(certMsg, msg)
-	}
-	hs.finishedHash.Write(certMsg.marshal())
-
-	msg, err = c.readHandshake()
-	if err != nil {
-		return err
-	}
-
-	cs, ok := msg.(*certificateStatusMsg)
-	if ok {
-		// RFC4366 on Certificate Status Request:
-		// The server MAY return a "certificate_status" message.
-
-		if !hs.serverHello.ocspStapling {
-			// If a server returns a "CertificateStatus" message, then the
-			// server MUST have included an extension of type "status_request"
-			// with empty "extension_data" in the extended server hello.
-
-			c.sendAlert(alertUnexpectedMessage)
-			return errors.New("tls: received unexpected CertificateStatus message")
-		}
-		hs.finishedHash.Write(cs.marshal())
-
-		c.ocspResponse = cs.response
+	} else {
+		hs.finishedHash.Write(certMsg.marshal())
 
 		msg, err = c.readHandshake()
 		if err != nil {
 			return err
 		}
-	}
 
-	if c.handshakes == 0 {
-		// If this is the first handshake on a connection, process and
-		// (optionally) verify the server's certificates.
-		if err := c.verifyServerCertificate(certMsg.certificates); err != nil {
-			return err
+		cs, ok := msg.(*certificateStatusMsg)
+		if ok {
+			// RFC4366 on Certificate Status Request:
+			// The server MAY return a "certificate_status" message.
+
+			if !hs.serverHello.ocspStapling {
+				// If a server returns a "CertificateStatus" message, then the
+				// server MUST have included an extension of type "status_request"
+				// with empty "extension_data" in the extended server hello.
+
+				c.sendAlert(alertUnexpectedMessage)
+				return errors.New("tls: received unexpected CertificateStatus message")
+			}
+			hs.finishedHash.Write(cs.marshal())
+
+			c.ocspResponse = cs.response
+
+			msg, err = c.readHandshake()
+			if err != nil {
+				return err
+			}
 		}
-	} else {
-		// This is a renegotiation handshake. We require that the
-		// server's identity (i.e. leaf certificate) is unchanged and
-		// thus any previous trust decision is still valid.
-		//
-		// See https://mitls.org/pages/attacks/3SHAKE for the
-		// motivation behind this requirement.
-		if !bytes.Equal(c.peerCertificates[0].Raw, certMsg.certificates[0]) {
-			c.sendAlert(alertBadCertificate)
-			return errors.New("tls: server's identity changed during renegotiation")
+
+		if c.handshakes == 0 {
+			// If this is the first handshake on a connection, process and
+			// (optionally) verify the server's certificates.
+			if err := c.verifyServerCertificate(certMsg.certificates); err != nil {
+				return err
+			}
+		} else {
+			// This is a renegotiation handshake. We require that the
+			// server's identity (i.e. leaf certificate) is unchanged and
+			// thus any previous trust decision is still valid.
+			//
+			// See https://mitls.org/pages/attacks/3SHAKE for the
+			// motivation behind this requirement.
+			if !bytes.Equal(c.peerCertificates[0].Raw, certMsg.certificates[0]) {
+				c.sendAlert(alertBadCertificate)
+				return errors.New("tls: server's identity changed during renegotiation")
+			}
 		}
 	}
 

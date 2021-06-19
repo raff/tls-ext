@@ -476,19 +476,23 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		return err
 	}
 
-	certMsg := new(certificateMsg)
-	certMsg.certificates = hs.cert.Certificate
-	hs.finishedHash.Write(certMsg.marshal())
-	if _, err := c.writeRecord(recordTypeHandshake, certMsg.marshal()); err != nil {
-		return err
-	}
-
-	if hs.hello.ocspStapling {
-		certStatus := new(certificateStatusMsg)
-		certStatus.response = hs.cert.OCSPStaple
-		hs.finishedHash.Write(certStatus.marshal())
-		if _, err := c.writeRecord(recordTypeHandshake, certStatus.marshal()); err != nil {
+	// only write back certMsg back if the suite requires.
+	// some suite (eg TLS-PSK) does not require certificate handshake
+	if hs.suite.Flags&SuiteNoCerts == 0 {
+		certMsg := new(certificateMsg)
+		certMsg.certificates = hs.cert.Certificate
+		hs.finishedHash.Write(certMsg.marshal())
+		if _, err := c.writeRecord(recordTypeHandshake, certMsg.marshal()); err != nil {
 			return err
+		}
+
+		if hs.hello.ocspStapling {
+			certStatus := new(certificateStatusMsg)
+			certStatus.response = hs.cert.OCSPStaple
+			hs.finishedHash.Write(certStatus.marshal())
+			if _, err := c.writeRecord(recordTypeHandshake, certStatus.marshal()); err != nil {
+				return err
+			}
 		}
 	}
 
