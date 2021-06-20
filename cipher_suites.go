@@ -195,6 +195,11 @@ var cipherSuites = []*CipherSuiteImpl{
 	{TLS_ECDHE_ECDSA_WITH_RC4_128_SHA, 16, 20, 0, EcdheECDSAKA, SuiteECDHE | SuiteECSign | SuiteDefaultOff, CipherRC4, MacSHA1, nil},
 }
 
+// RegisterCipherSuites registers additional cipher suites
+func RegisterCipherSuites(c ...*CipherSuiteImpl) {
+	cipherSuites = append(cipherSuites, c...)
+}
+
 // selectCipherSuite returns the first cipher suite from ids which is also in
 // supportedIDs and passes the ok filter.
 func selectCipherSuite(ids, supportedIDs []uint16, ok func(*CipherSuiteImpl) bool) *CipherSuiteImpl {
