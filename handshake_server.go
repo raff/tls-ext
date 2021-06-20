@@ -340,7 +340,9 @@ func (hs *serverHandshakeState) pickCipherSuite() error {
 }
 
 func (hs *serverHandshakeState) cipherSuiteOk(c *CipherSuiteImpl) bool {
-	if c.Flags&SuiteECDHE != 0 {
+	if c.Flags&SuiteNoCerts != 0 {
+		return true
+	} else if c.Flags&SuiteECDHE != 0 {
 		if !hs.ecdheOk {
 			return false
 		}

@@ -582,7 +582,11 @@ func (hs *clientHandshakeState) doFullHandshake(useCerts bool) error {
 		}
 	}
 
-	preMasterSecret, ckx, err := keyAgreement.GenerateClientKeyExchange(c.config, hs.hello, c.peerCertificates[0])
+	var cert *x509.Certificate
+	if len(c.peerCertificates) > 0 {
+		cert = c.peerCertificates[0]
+	}
+	preMasterSecret, ckx, err := keyAgreement.GenerateClientKeyExchange(c.config, hs.hello, cert)
 	if err != nil {
 		c.sendAlert(alertInternalError)
 		return err
