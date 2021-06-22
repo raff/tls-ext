@@ -6,19 +6,18 @@ package tls
 
 import (
 	"bytes"
+	"context"
+	"crypto"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	//"internal/testenv"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"os"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -201,6 +200,118 @@ func TestDialTimeout(t *testing.T) {
 	}
 }
 
+func TestDeadlineOnWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
+
+	ln := newLocalListener(t)
+	defer ln.Close()
+
+	srvCh := make(chan *Conn, 1)
+
+	go func() {
+		sconn, err := ln.Accept()
+		if err != nil {
+			srvCh <- nil
+			return
+		}
+		srv := Server(sconn, testConfig.Clone())
+		if err := srv.Handshake(); err != nil {
+			srvCh <- nil
+			return
+		}
+		srvCh <- srv
+	}()
+
+	clientConfig := testConfig.Clone()
+	clientConfig.MaxVersion = VersionTLS12
+	conn, err := Dial("tcp", ln.Addr().String(), clientConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	srv := <-srvCh
+	if srv == nil {
+		t.Error(err)
+	}
+
+	// Make sure the client/server is setup correctly and is able to do a typical Write/Read
+	buf := make([]byte, 6)
+	if _, err := srv.Write([]byte("foobar")); err != nil {
+		t.Errorf("Write err: %v", err)
+	}
+	if n, err := conn.Read(buf); n != 6 || err != nil || string(buf) != "foobar" {
+		t.Errorf("Read = %d, %v, data %q; want 6, nil, foobar", n, err, buf)
+	}
+
+	// Set a deadline which should cause Write to timeout
+	if err = srv.SetDeadline(time.Now()); err != nil {
+		t.Fatalf("SetDeadline(time.Now()) err: %v", err)
+	}
+	if _, err = srv.Write([]byte("should fail")); err == nil {
+		t.Fatal("Write should have timed out")
+	}
+
+	// Clear deadline and make sure it still times out
+	if err = srv.SetDeadline(time.Time{}); err != nil {
+		t.Fatalf("SetDeadline(time.Time{}) err: %v", err)
+	}
+	if _, err = srv.Write([]byte("This connection is permanently broken")); err == nil {
+		t.Fatal("Write which previously failed should still time out")
+	}
+
+	// Verify the error
+	if ne := err.(net.Error); ne.Temporary() != false {
+		t.Error("Write timed out but incorrectly classified the error as Temporary")
+	}
+	if !isTimeoutError(err) {
+		t.Error("Write timed out but did not classify the error as a Timeout")
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(b []byte) (int, error) { return f(b) }
+
+// TestDialer tests that tls.Dialer.DialContext can abort in the middle of a handshake.
+// (The other cases are all handled by the existing dial tests in this package, which
+// all also flow through the same code shared code paths)
+func TestDialer(t *testing.T) {
+	ln := newLocalListener(t)
+	defer ln.Close()
+
+	unblockServer := make(chan struct{}) // close-only
+	defer close(unblockServer)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-unblockServer
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d := Dialer{Config: &Config{
+		Rand: readerFunc(func(b []byte) (n int, err error) {
+			// By the time crypto/tls wants randomness, that means it has a TCP
+			// connection, so we're past the Dialer's dial and now blocked
+			// in a handshake. Cancel our context and see if we get unstuck.
+			// (Our TCP listener above never reads or writes, so the Handshake
+			// would otherwise be stuck forever)
+			cancel()
+			return len(b), nil
+		}),
+		ServerName: "foo",
+	}}
+	_, err := d.DialContext(ctx, "tcp", ln.Addr().String())
+	if err != context.Canceled {
+		t.Errorf("err = %v; want context.Canceled", err)
+	}
+}
+
 func isTimeoutError(err error) bool {
 	if ne, ok := err.(net.Error); ok {
 		return ne.Timeout()
@@ -294,7 +405,11 @@ func TestTLSUniqueMatches(t *testing.T) {
 	defer ln.Close()
 
 	serverTLSUniques := make(chan []byte)
+	parentDone := make(chan struct{})
+	childDone := make(chan struct{})
+	defer close(parentDone)
 	go func() {
+		defer close(childDone)
 		for i := 0; i < 2; i++ {
 			sconn, err := ln.Accept()
 			if err != nil {
@@ -308,7 +423,11 @@ func TestTLSUniqueMatches(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			serverTLSUniques <- srv.ConnectionState().TLSUnique
+			select {
+			case <-parentDone:
+				return
+			case serverTLSUniques <- srv.ConnectionState().TLSUnique:
+			}
 		}
 	}()
 
@@ -318,7 +437,15 @@ func TestTLSUniqueMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(conn.ConnectionState().TLSUnique, <-serverTLSUniques) {
+
+	var serverTLSUniquesValue []byte
+	select {
+	case <-childDone:
+		return
+	case serverTLSUniquesValue = <-serverTLSUniques:
+	}
+
+	if !bytes.Equal(conn.ConnectionState().TLSUnique, serverTLSUniquesValue) {
 		t.Error("client and server channel bindings differ")
 	}
 	conn.Close()
@@ -331,13 +458,22 @@ func TestTLSUniqueMatches(t *testing.T) {
 	if !conn.ConnectionState().DidResume {
 		t.Error("second session did not use resumption")
 	}
-	if !bytes.Equal(conn.ConnectionState().TLSUnique, <-serverTLSUniques) {
+
+	select {
+	case <-childDone:
+		return
+	case serverTLSUniquesValue = <-serverTLSUniques:
+	}
+
+	if !bytes.Equal(conn.ConnectionState().TLSUnique, serverTLSUniquesValue) {
 		t.Error("client and server channel bindings differ when session resumption is used")
 	}
 }
 
 func TestVerifyHostname(t *testing.T) {
-	//testenv.MustHaveExternalNetwork(t)
+	// Assume that external network is always available when running test.
+	// plus there's no way to get "internal" packages
+	// testenv.MustHaveExternalNetwork(t)
 
 	c, err := Dial("tcp", "www.google.com:https", nil)
 	if err != nil {
@@ -433,8 +569,8 @@ func TestConnCloseBreakingWrite(t *testing.T) {
 	}
 
 	<-closeReturned
-	if err := tconn.Close(); err != errClosed {
-		t.Errorf("Close error = %v; want errClosed", err)
+	if err := tconn.Close(); err != net.ErrClosed {
+		t.Errorf("Close error = %v; want net.ErrClosed", err)
 	}
 }
 
@@ -458,7 +594,7 @@ func TestConnCloseWrite(t *testing.T) {
 		}
 		defer srv.Close()
 
-		data, err := ioutil.ReadAll(srv)
+		data, err := io.ReadAll(srv)
 		if err != nil {
 			return err
 		}
@@ -499,7 +635,7 @@ func TestConnCloseWrite(t *testing.T) {
 			return fmt.Errorf("CloseWrite error = %v; want errShutdown", err)
 		}
 
-		data, err := ioutil.ReadAll(conn)
+		data, err := io.ReadAll(conn)
 		if err != nil {
 			return err
 		}
@@ -562,7 +698,7 @@ func TestWarningAlertFlood(t *testing.T) {
 		}
 		defer srv.Close()
 
-		_, err = ioutil.ReadAll(srv)
+		_, err = io.ReadAll(srv)
 		if err == nil {
 			return errors.New("unexpected lack of error from server")
 		}
@@ -598,7 +734,7 @@ func TestWarningAlertFlood(t *testing.T) {
 }
 
 func TestCloneFuncFields(t *testing.T) {
-	const expectedCount = 5
+	const expectedCount = 6
 	called := 0
 
 	c1 := Config{
@@ -622,6 +758,10 @@ func TestCloneFuncFields(t *testing.T) {
 			called |= 1 << 4
 			return nil
 		},
+		VerifyConnection: func(ConnectionState) error {
+			called |= 1 << 5
+			return nil
+		},
 	}
 
 	c2 := c1.Clone()
@@ -631,6 +771,7 @@ func TestCloneFuncFields(t *testing.T) {
 	c2.GetClientCertificate(nil)
 	c2.GetConfigForClient(nil)
 	c2.VerifyPeerCertificate(nil, nil)
+	c2.VerifyConnection(ConnectionState{})
 
 	if called != (1<<expectedCount)-1 {
 		t.Fatalf("expected %d calls but saw calls %b", expectedCount, called)
@@ -644,17 +785,12 @@ func TestCloneNonFuncFields(t *testing.T) {
 	typ := v.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		f := v.Field(i)
-		if !f.CanSet() {
-			// unexported field; not cloned.
-			continue
-		}
-
 		// testing/quick can't handle functions or interfaces and so
 		// isn't used here.
 		switch fn := typ.Field(i).Name; fn {
 		case "Rand":
 			f.Set(reflect.ValueOf(io.Reader(os.Stdin)))
-		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "GetClientCertificate":
+		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "VerifyConnection", "GetClientCertificate", "Extra":
 			// DeepEqual can't compare functions. If you add a
 			// function field to this list, you must also change
 			// TestCloneFuncFields to ensure that the func field is
@@ -689,20 +825,26 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf([]CurveID{CurveP256}))
 		case "Renegotiation":
 			f.Set(reflect.ValueOf(RenegotiateOnceAsClient))
-		case "Extra":
+		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys":
+			continue // these are unexported fields that are handled separately
 		default:
 			t.Errorf("all fields must be accounted for, but saw unknown field %q", fn)
 		}
 	}
+	// Set the unexported fields related to session ticket keys, which are copied with Clone().
+	c1.autoSessionTicketKeys = []ticketKey{c1.ticketKeyFromBytes(c1.SessionTicketKey)}
+	c1.sessionTicketKeys = []ticketKey{c1.ticketKeyFromBytes(c1.SessionTicketKey)}
 
 	c2 := c1.Clone()
-	// DeepEqual also compares unexported fields, thus c2 needs to have run
-	// serverInit in order to be DeepEqual to c1. Cloning it and discarding
-	// the result is sufficient.
-	c2.Clone()
-
 	if !reflect.DeepEqual(&c1, c2) {
 		t.Errorf("clone failed to copy a field")
+	}
+}
+
+func TestCloneNilConfig(t *testing.T) {
+	var config *Config
+	if cc := config.Clone(); cc != nil {
+		t.Fatalf("Clone with nil should return nil, got: %+v", cc)
 	}
 }
 
@@ -981,8 +1123,8 @@ func TestConnectionState(t *testing.T) {
 			if ss.ServerName != serverName {
 				t.Errorf("Got server name %q, expected %q", ss.ServerName, serverName)
 			}
-			if cs.ServerName != "" {
-				t.Errorf("Got unexpected server name on the client side")
+			if cs.ServerName != serverName {
+				t.Errorf("Got server name on client connection %q, expected %q", cs.ServerName, serverName)
 			}
 
 			if len(ss.PeerCertificates) != 1 || len(cs.PeerCertificates) != 1 {
@@ -1024,60 +1166,6 @@ func TestConnectionState(t *testing.T) {
 	}
 }
 
-// TestEscapeRoute tests that the library will still work if support for TLS 1.3
-// is dropped later in the Go 1.12 cycle.
-func TestEscapeRoute(t *testing.T) {
-	defer func(savedSupportedVersions []uint16) {
-		supportedVersions = savedSupportedVersions
-	}(supportedVersions)
-	supportedVersions = []uint16{
-		VersionTLS12,
-		VersionTLS11,
-		VersionTLS10,
-		VersionSSL30,
-	}
-
-	expectVersion(t, testConfig, testConfig, VersionTLS12)
-}
-
-func expectVersion(t *testing.T, clientConfig, serverConfig *Config, v uint16) {
-	ss, cs, err := testHandshake(t, clientConfig, serverConfig)
-	if err != nil {
-		t.Fatalf("Handshake failed: %v", err)
-	}
-	if ss.Version != v {
-		t.Errorf("Server negotiated version %x, expected %x", cs.Version, v)
-	}
-	if cs.Version != v {
-		t.Errorf("Client negotiated version %x, expected %x", cs.Version, v)
-	}
-}
-
-// TestTLS13Switch checks the behavior of GODEBUG=tls13=[0|1]. See Issue 30055.
-func TestTLS13Switch(t *testing.T) {
-	defer func(savedGODEBUG string) {
-		os.Setenv("GODEBUG", savedGODEBUG)
-	}(os.Getenv("GODEBUG"))
-
-	os.Setenv("GODEBUG", "tls13=0")
-	tls13Support.Once = sync.Once{} // reset the cache
-
-	tls12Config := testConfig.Clone()
-	tls12Config.MaxVersion = VersionTLS12
-	expectVersion(t, testConfig, testConfig, VersionTLS12)
-	expectVersion(t, tls12Config, testConfig, VersionTLS12)
-	expectVersion(t, testConfig, tls12Config, VersionTLS12)
-	expectVersion(t, tls12Config, tls12Config, VersionTLS12)
-
-	os.Setenv("GODEBUG", "tls13=1")
-	tls13Support.Once = sync.Once{} // reset the cache
-
-	expectVersion(t, testConfig, testConfig, VersionTLS13)
-	expectVersion(t, tls12Config, testConfig, VersionTLS12)
-	expectVersion(t, testConfig, tls12Config, VersionTLS12)
-	expectVersion(t, tls12Config, tls12Config, VersionTLS12)
-}
-
 // Issue 28744: Ensure that we don't modify memory
 // that Config doesn't own such as Certificates.
 func TestBuildNameToCertificate_doesntModifyCertificates(t *testing.T) {
@@ -1101,3 +1189,289 @@ func TestBuildNameToCertificate_doesntModifyCertificates(t *testing.T) {
 }
 
 func testingKey(s string) string { return strings.ReplaceAll(s, "TESTING KEY", "PRIVATE KEY") }
+
+func TestClientHelloInfo_SupportsCertificate(t *testing.T) {
+	rsaCert := &Certificate{
+		Certificate: [][]byte{testRSACertificate},
+		PrivateKey:  testRSAPrivateKey,
+	}
+	pkcs1Cert := &Certificate{
+		Certificate:                  [][]byte{testRSACertificate},
+		PrivateKey:                   testRSAPrivateKey,
+		SupportedSignatureAlgorithms: []SignatureScheme{PKCS1WithSHA1, PKCS1WithSHA256},
+	}
+	ecdsaCert := &Certificate{
+		// ECDSA P-256 certificate
+		Certificate: [][]byte{testP256Certificate},
+		PrivateKey:  testP256PrivateKey,
+	}
+	ed25519Cert := &Certificate{
+		Certificate: [][]byte{testEd25519Certificate},
+		PrivateKey:  testEd25519PrivateKey,
+	}
+
+	tests := []struct {
+		c       *Certificate
+		chi     *ClientHelloInfo
+		wantErr string
+	}{
+		{rsaCert, &ClientHelloInfo{
+			ServerName:        "example.golang",
+			SignatureSchemes:  []SignatureScheme{PSSWithSHA256},
+			SupportedVersions: []uint16{VersionTLS13},
+		}, ""},
+		{ecdsaCert, &ClientHelloInfo{
+			SignatureSchemes:  []SignatureScheme{PSSWithSHA256, ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS13, VersionTLS12},
+		}, ""},
+		{rsaCert, &ClientHelloInfo{
+			ServerName:        "example.com",
+			SignatureSchemes:  []SignatureScheme{PSSWithSHA256},
+			SupportedVersions: []uint16{VersionTLS13},
+		}, "not valid for requested server name"},
+		{ecdsaCert, &ClientHelloInfo{
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP384AndSHA384},
+			SupportedVersions: []uint16{VersionTLS13},
+		}, "signature algorithms"},
+		{pkcs1Cert, &ClientHelloInfo{
+			SignatureSchemes:  []SignatureScheme{PSSWithSHA256, ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS13},
+		}, "signature algorithms"},
+
+		{rsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			SignatureSchemes:  []SignatureScheme{PKCS1WithSHA1},
+			SupportedVersions: []uint16{VersionTLS13, VersionTLS12},
+		}, "signature algorithms"},
+		{rsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			SignatureSchemes:  []SignatureScheme{PKCS1WithSHA1},
+			SupportedVersions: []uint16{VersionTLS13, VersionTLS12},
+			config: &Config{
+				MaxVersion: VersionTLS12,
+			},
+		}, ""}, // Check that mutual version selection works.
+
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, ""},
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP384AndSHA384},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, ""}, // TLS 1.2 does not restrict curves based on the SignatureScheme.
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  nil,
+			SupportedVersions: []uint16{VersionTLS12},
+		}, ""}, // TLS 1.2 comes with default signature schemes.
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, "cipher suite"},
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+			config: &Config{
+				CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			},
+		}, "cipher suite"},
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP384},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, "certificate curve"},
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{1},
+			SignatureSchemes:  []SignatureScheme{ECDSAWithP256AndSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, "doesn't support ECDHE"},
+		{ecdsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{PSSWithSHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, "signature algorithms"},
+
+		{ed25519Cert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256}, // only relevant for ECDHE support
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{Ed25519},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, ""},
+		{ed25519Cert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{CurveP256}, // only relevant for ECDHE support
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{Ed25519},
+			SupportedVersions: []uint16{VersionTLS10},
+		}, "doesn't support Ed25519"},
+		{ed25519Cert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			SupportedCurves:   []CurveID{},
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SignatureSchemes:  []SignatureScheme{Ed25519},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, "doesn't support ECDHE"},
+
+		{rsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA},
+			SupportedCurves:   []CurveID{CurveP256}, // only relevant for ECDHE support
+			SupportedPoints:   []uint8{pointFormatUncompressed},
+			SupportedVersions: []uint16{VersionTLS10},
+		}, ""},
+		{rsaCert, &ClientHelloInfo{
+			CipherSuites:      []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			SupportedVersions: []uint16{VersionTLS12},
+		}, ""}, // static RSA fallback
+	}
+	for i, tt := range tests {
+		err := tt.chi.SupportsCertificate(tt.c)
+		switch {
+		case tt.wantErr == "" && err != nil:
+			t.Errorf("%d: unexpected error: %v", i, err)
+		case tt.wantErr != "" && err == nil:
+			t.Errorf("%d: unexpected success", i)
+		case tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr):
+			t.Errorf("%d: got error %q, expected %q", i, err, tt.wantErr)
+		}
+	}
+}
+
+func TestCipherSuites(t *testing.T) {
+	var lastID uint16
+	for _, c := range CipherSuites() {
+		if lastID > c.ID {
+			t.Errorf("CipherSuites are not ordered by ID: got %#04x after %#04x", c.ID, lastID)
+		} else {
+			lastID = c.ID
+		}
+
+		if c.Insecure {
+			t.Errorf("%#04x: Insecure CipherSuite returned by CipherSuites()", c.ID)
+		}
+	}
+	lastID = 0
+	for _, c := range InsecureCipherSuites() {
+		if lastID > c.ID {
+			t.Errorf("InsecureCipherSuites are not ordered by ID: got %#04x after %#04x", c.ID, lastID)
+		} else {
+			lastID = c.ID
+		}
+
+		if !c.Insecure {
+			t.Errorf("%#04x: not Insecure CipherSuite returned by InsecureCipherSuites()", c.ID)
+		}
+	}
+
+	cipherSuiteByID := func(id uint16) *CipherSuite {
+		for _, c := range CipherSuites() {
+			if c.ID == id {
+				return c
+			}
+		}
+		for _, c := range InsecureCipherSuites() {
+			if c.ID == id {
+				return c
+			}
+		}
+		return nil
+	}
+
+	for _, c := range cipherSuites {
+		cc := cipherSuiteByID(c.Id)
+		if cc == nil {
+			t.Errorf("%#04x: no CipherSuite entry", c.Id)
+			continue
+		}
+
+		if defaultOff := c.Flags&SuiteDefaultOff != 0; defaultOff != cc.Insecure {
+			t.Errorf("%#04x: Insecure %v, expected %v", c.Id, cc.Insecure, defaultOff)
+		}
+		if tls12Only := c.Flags&SuiteTLS12 != 0; tls12Only && len(cc.SupportedVersions) != 1 {
+			t.Errorf("%#04x: suite is TLS 1.2 only, but SupportedVersions is %v", c.Id, cc.SupportedVersions)
+		} else if !tls12Only && len(cc.SupportedVersions) != 3 {
+			t.Errorf("%#04x: suite TLS 1.0-1.2, but SupportedVersions is %v", c.Id, cc.SupportedVersions)
+		}
+
+		if got := CipherSuiteName(c.Id); got != cc.Name {
+			t.Errorf("%#04x: unexpected CipherSuiteName: got %q, expected %q", c.Id, got, cc.Name)
+		}
+	}
+	for _, c := range cipherSuitesTLS13 {
+		cc := cipherSuiteByID(c.id)
+		if cc == nil {
+			t.Errorf("%#04x: no CipherSuite entry", c.id)
+			continue
+		}
+
+		if cc.Insecure {
+			t.Errorf("%#04x: Insecure %v, expected false", c.id, cc.Insecure)
+		}
+		if len(cc.SupportedVersions) != 1 || cc.SupportedVersions[0] != VersionTLS13 {
+			t.Errorf("%#04x: suite is TLS 1.3 only, but SupportedVersions is %v", c.id, cc.SupportedVersions)
+		}
+
+		if got := CipherSuiteName(c.id); got != cc.Name {
+			t.Errorf("%#04x: unexpected CipherSuiteName: got %q, expected %q", c.id, got, cc.Name)
+		}
+	}
+
+	if got := CipherSuiteName(0xabc); got != "0x0ABC" {
+		t.Errorf("unexpected fallback CipherSuiteName: got %q, expected 0x0ABC", got)
+	}
+}
+
+type brokenSigner struct{ crypto.Signer }
+
+func (s brokenSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
+	// Replace opts with opts.HashFunc(), so rsa.PSSOptions are discarded.
+	return s.Signer.Sign(rand, digest, opts.HashFunc())
+}
+
+// TestPKCS1OnlyCert uses a client certificate with a broken crypto.Signer that
+// always makes PKCS #1 v1.5 signatures, so can't be used with RSA-PSS.
+func TestPKCS1OnlyCert(t *testing.T) {
+	clientConfig := testConfig.Clone()
+	clientConfig.Certificates = []Certificate{{
+		Certificate: [][]byte{testRSACertificate},
+		PrivateKey:  brokenSigner{testRSAPrivateKey},
+	}}
+	serverConfig := testConfig.Clone()
+	serverConfig.MaxVersion = VersionTLS12 // TLS 1.3 doesn't support PKCS #1 v1.5
+	serverConfig.ClientAuth = RequireAnyClientCert
+
+	// If RSA-PSS is selected, the handshake should fail.
+	if _, _, err := testHandshake(t, clientConfig, serverConfig); err == nil {
+		t.Fatal("expected broken certificate to cause connection to fail")
+	}
+
+	clientConfig.Certificates[0].SupportedSignatureAlgorithms =
+		[]SignatureScheme{PKCS1WithSHA1, PKCS1WithSHA256}
+
+	// But if the certificate restricts supported algorithms, RSA-PSS should not
+	// be selected, and the handshake should succeed.
+	if _, _, err := testHandshake(t, clientConfig, serverConfig); err != nil {
+		t.Error(err)
+	}
+}
